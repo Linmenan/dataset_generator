@@ -1,0 +1,1 @@
+![总体设计](doc/structural_design.png)
