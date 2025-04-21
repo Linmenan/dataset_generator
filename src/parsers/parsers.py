@@ -1,10 +1,118 @@
-from ..models.elements import *
+import xml.etree.ElementTree as ET
+from ..models.map_elements import *
 from ..utils.sampling import *
 
 
 class MapParser:
+    def __init__(self, file_path) -> None:
+        self.file_path = file_path
+        self.tree = ET.parse(file_path)
+        self.roads = {}
+        self.traffic_lights = {} # traffic light id 与 Controlle对象构成的字典
+        self.parse_oxdr_all()
+        self.parse_traffic_lights()
 
-    def compute_reference_line(road_elem, ref_line):
+    def parse_oxdr_all(self) -> None:
+        """
+        解析 xodr 文件，提取参考线、车道及链路信息，并构造 Road 对象（包含 Lane 列表）。
+        对于 lane 链接，直接采用 xodr 文件中 lane 链接信息进行赋值，不作默认假设。
+        """
+        self.roads = {}
+        root = self.tree.getroot()
+        junction_dict = {junc.get('id'): junc for junc in root.findall('.//junction')}
+        # 遍历所有 road 元素，构造 Road 对象
+        for road_elem in root.findall('.//road'):
+            road_id = road_elem.get('id')
+            length = float(road_elem.get('length', '0'))
+            link = road_elem.find('link')
+            type_elem = road_elem.find('type')
+            type = ""
+            speed_limit = 0
+            
+            if type_elem is not None:
+                type = type_elem.get('type')
+                speed_ = type_elem.find("speed")
+                factor = 1.0
+                if speed_ is not None:
+                    speed_limit = float(speed_.get('max','0'))
+                    unit = speed_.get('unit', None)
+                    if unit is not None:
+                        if unit == 'mph':
+                            factor = 1609.344 / 3600 
+                        elif unit == 'km/h' or unit == 'kmph'or unit == 'kph':
+                            factor = 1000 / 3600 
+
+            speed_limit = speed_limit*factor
+            predecessor = None
+            successor = None
+            if link is not None:
+                pred = link.find('predecessor')
+                succ = link.find('successor')
+                if pred is not None:
+                    predecessor = (pred.get('elementType'), pred.get('elementId'))
+                if succ is not None:
+                    successor = (succ.get('elementType'), succ.get('elementId'), succ.get('contactPoint'))
+            junction = road_elem.get('junction', "-1")
+            road_obj = Road(road_id, predecessor, successor, junction, type, length, speed_limit, on_route=False)
+            self.compute_reference_line(road_elem, road_obj.reference_line)
+            self.parse_driving_lanes(road_elem, road_obj)
+            self.parse_objects(road_elem, road_obj)
+            road_obj.compute_midpoint()
+            self.roads[road_id] = road_obj
+
+    def parse_objects(self, road_elem, road_obj):
+        """
+        解析 road 元素中的 objects 元素，提取信号灯、交通标志等对象信息，并构造 Object 对象。
+        """
+        objects_elem = road_elem.find('objects')
+        if objects_elem is not None:
+            for obj_elem in objects_elem.findall('object'):
+                obj_id = obj_elem.get('id')
+                obj_type = obj_elem.get('type')
+                s = obj_elem.get('s')
+                t = obj_elem.get('t')
+                z_offset = obj_elem.get('zOffset')
+                hdg = obj_elem.get('hdg')
+                width = obj_elem.get('width')
+                length = obj_elem.get('length')
+                road_obj.objects.append(Object(obj_id, obj_type, s, t, z_offset, hdg, width, length))
+        
+        signals_elem = road_elem.find('signals')
+        if signals_elem is not None:
+            for signal_elem in signals_elem.findall('signal'):
+                signal_id = signal_elem.get('id')
+                s = signal_elem.get('s')
+                t = signal_elem.get('t')
+                z_offset = signal_elem.get('zOffset')
+                road_obj.signals.append(Signal(signal_id, s, t, z_offset))
+            if (len(road_obj.signals) > 0):
+                for signal_reference_elem in signals_elem.findall('signalReference'):
+                    id = signal_reference_elem.get('id')
+                    validity_elem = signal_reference_elem.find('validity')
+                    if validity_elem is not None:
+                        from_lane = validity_elem.get('fromLane')
+                        to_lane = validity_elem.get('toLane')
+                    user_data_elem = signal_reference_elem.find('userData')
+                    if user_data_elem is not None:
+                        vector_signal_elem = user_data_elem.find('vectorSignal')
+                        if vector_signal_elem is not None:
+                            turn_relation = vector_signal_elem.get('turnRelation')
+                            reference = tuple({id, from_lane, to_lane, turn_relation})
+                            road_obj.signals[0].reference.append(reference)
+            
+    def parse_traffic_lights(self):
+        root = self.tree.getroot()
+        for controller_elem in root.findall('.//controller'):
+            id = controller_elem.get('id')
+            sequence = controller_elem.get('sequence')
+            controller = Controller(id, sequence)
+            for control_elem in controller_elem.findall('control'):
+                signal_id = control_elem.get('signalId')
+                type = control_elem.get('type')
+                controller.controls[signal_id] = Control(signal_id, type)
+            self.traffic_lights[id] = controller
+
+    def compute_reference_line(self, road_elem, ref_line):
         """
         解析 road 的 planView 中所有 geometry 节点，按 s 排序，
         并使用每段的原始参数对全局 s 进行插值计算，
@@ -94,8 +202,7 @@ class MapParser:
             ref_line.headings.append(hdg_val)
             ref_line.s_values.append(s)
             
-    # 从 road 的 <lanes> 部分解析 driving 类型车道，并返回包含 Lane 对象的列表  
-    def parse_driving_lanes(road_elem, junction_dict, road_obj):
+    def parse_driving_lanes(self, road_elem, road_obj):
         """
         从 road 的 <lanes> 部分解析车道信息，
         累积所有车道宽度（包括类型不为 "driving" 的，如 shoulder、median 等），
@@ -123,6 +230,8 @@ class MapParser:
         
         结果直接更新 road_obj.lanes（仅保留 type 为 "driving" 的车道）。
         """
+        root = self.tree.getroot()
+        junction_dict = {junc.get('id'): junc for junc in root.findall('.//junction')}
         # 将 s_values 转为 numpy 数组
         s_arr = np.array(road_obj.reference_line.s_values)
         baseline = road_obj.reference_line.sampled_points
@@ -165,6 +274,17 @@ class MapParser:
                 lane_id = int(lane.get('id'))
                 lane_type = lane.get('type')
                 width_elem = lane.find('width')
+                user_data_elem = lane.find('userData')
+                travel_dir = ""
+                lane_change = ""
+                if user_data_elem is not None:
+                    vector_lane_elem = user_data_elem.find('vectorLane')
+                    if vector_lane_elem is not None:
+                        travel_dir = vector_lane_elem.get('travelDir','')
+                road_mark_elem = lane.find('roadMark')
+                if road_mark_elem is not None:
+                    lane_change = road_mark_elem.get('laneChange','')
+                    
                 if width_elem is not None:
                     sw_offset = float(width_elem.get('sOffset', '0'))
                     a_w = float(width_elem.get('a', '0'))
@@ -212,34 +332,40 @@ class MapParser:
                 elif road_pred[0]=='junction':
                     junction = junction_dict.get(road_pred[1])
                     for conn in junction.findall('connection'):
-                    if conn.get('incomingRoad')==road_obj.road_id:
-                        for link in conn.findall('laneLink'):
-                            if lane.get('id') == link.get('from'):
-                                lane_succ.append((conn.get('connectingRoad'),link.get('to')))
-                                # print(f"找到后继 {(conn.get('connectingRoad'),link.get('to'))}")
-                                break
+                        if conn.get('incomingRoad')==road_obj.road_id:
+                            for link in conn.findall('laneLink'):
+                                if lane.get('id') == link.get('from'):
+                                    lane_succ.append((conn.get('connectingRoad'),link.get('to')))
+                                    # print(f"找到后继 {(conn.get('connectingRoad'),link.get('to'))}")
+                                    break
 
-                left_all.append((lane_id, sw_offset, a_w, b_w, c_w, d_w, lane_type, lane_pred, lane_succ))
+                left_all.append((lane_id, sw_offset, a_w, b_w, c_w, d_w, lane_type, lane_pred, lane_succ, travel_dir, lane_change))
             left_all.sort(key=lambda x: x[0])
         cum_width_left = np.zeros_like(s_arr)
 
         for info in left_all:
-            lane_id, sw_offset, a_w, b_w, c_w, d_w, lane_type, lane_pred, lane_succ = info
+            lane_id, sw_offset, a_w, b_w, c_w, d_w, lane_type, lane_pred, lane_succ ,travel_dir, lane_change = info
             w_current = offset_poly(s_arr, sw_offset, a_w, b_w, c_w, d_w)
             if lane_type == "driving":
                 current_offset = global_offset + cum_width_left + w_current/2.0
                 sampled_points = []
+                headings = []
                 for (pt, local_hdg, offset_val) in zip(baseline, baseline_headings, current_offset):
                     x_ref, y_ref = pt
                     x_lane = x_ref - offset_val * np.sin(local_hdg)
                     y_lane = y_ref + offset_val * np.cos(local_hdg)
                     sampled_points.append((x_lane, y_lane))
-                lane_obj = Lane(lane_id, "left", sampled_points, in_range=False)
+                    if travel_dir=='backward':
+                        headings.append(local_hdg + np.pi)
+                    else:
+                        headings.append(local_hdg)
+                lane_obj = Lane(lane_id, "left", sampled_points, headings=headings, in_range=False, travel_dir=travel_dir, lane_change=lane_change)
                 # 记录从 lane 自身获取的链接信息（可能只有 lane id，没有 Road 信息）
                 if lane_pred is not None:
                     lane_obj.predecessor = lane_pred
                 if lane_succ is not None:
                     lane_obj.successor = lane_succ
+                lane_obj.compute_midpoint()
                 driving_lanes.append(lane_obj)
             cum_width_left = cum_width_left + w_current
 
@@ -253,6 +379,17 @@ class MapParser:
                 lane_id = int(lane.get('id'))
                 lane_type = lane.get('type')
                 width_elem = lane.find('width')
+                user_data_elem = lane.find('userData')
+                travel_dir = ""
+                lane_change = ""
+                if user_data_elem is not None:
+                    vector_lane_elem = user_data_elem.find('vectorLane')
+                    if vector_lane_elem is not None:
+                        travel_dir = vector_lane_elem.get('travelDir','')
+                road_mark_elem = lane.find('roadMark')
+                if road_mark_elem is not None:
+                    lane_change = road_mark_elem.get('laneChange','')
+
                 if width_elem is not None:
                     sw_offset = float(width_elem.get('sOffset', '0'))
                     a_w = float(width_elem.get('a', '0'))
@@ -300,33 +437,39 @@ class MapParser:
                 elif road_pred[0]=='junction':
                     junction = junction_dict.get(road_pred[1])
                     for conn in junction.findall('connection'):
-                    if conn.get('incomingRoad')==road_obj.road_id:
-                        for link in conn.findall('laneLink'):
-                            if lane.get('id') == link.get('from'):
-                                lane_succ.append((conn.get('connectingRoad'),link.get('to')))
-                                # print(f"找到后继 {(conn.get('connectingRoad'),link.get('to'))}")
-                                break
+                        if conn.get('incomingRoad')==road_obj.road_id:
+                            for link in conn.findall('laneLink'):
+                                if lane.get('id') == link.get('from'):
+                                    lane_succ.append((conn.get('connectingRoad'),link.get('to')))
+                                    # print(f"找到后继 {(conn.get('connectingRoad'),link.get('to'))}")
+                                    break
                                 
-                right_all.append((lane_id, sw_offset, a_w, b_w, c_w, d_w, lane_type, lane_pred, lane_succ))
+                right_all.append((lane_id, sw_offset, a_w, b_w, c_w, d_w, lane_type, lane_pred, lane_succ, travel_dir, lane_change))
             right_all.sort(key=lambda x: x[0], reverse=True)
         cum_width_right = np.zeros_like(s_arr)
 
         for info in right_all:
-            lane_id, sw_offset, a_w, b_w, c_w, d_w, lane_type, lane_pred, lane_succ = info
+            lane_id, sw_offset, a_w, b_w, c_w, d_w, lane_type, lane_pred, lane_succ ,travel_dir, lane_change = info
             w_current = offset_poly(s_arr, sw_offset, a_w, b_w, c_w, d_w)
             if lane_type == "driving":
                 current_offset = global_offset - (cum_width_right + w_current/2.0)
                 sampled_points = []
+                headings = []
                 for (pt, local_hdg, offset_val) in zip(baseline, baseline_headings, current_offset):
                     x_ref, y_ref = pt
                     x_lane = x_ref - offset_val * np.sin(local_hdg)
                     y_lane = y_ref + offset_val * np.cos(local_hdg)
                     sampled_points.append((x_lane, y_lane))
-                lane_obj = Lane(lane_id, "right", sampled_points, in_range=False)
+                    if travel_dir=='backward':
+                        headings.append(local_hdg + np.pi)
+                    else:
+                        headings.append(local_hdg)
+                lane_obj = Lane(lane_id, "right", sampled_points, headings=headings, in_range=False, travel_dir=travel_dir, lane_change=lane_change)
                 if lane_pred is not None:
                     lane_obj.predecessor = lane_pred
                 if lane_succ is not None:
                     lane_obj.successor = lane_succ
+                lane_obj.compute_midpoint()
                 driving_lanes.append(lane_obj)
             cum_width_right = cum_width_right + w_current
 
@@ -334,39 +477,7 @@ class MapParser:
 
 
 
-    def parse_oxdr_all(file_path):
-        """
-        解析 xodr 文件，提取参考线、车道及链路信息，并构造 Road 对象（包含 Lane 列表）。
-        对于 lane 链接，直接采用 xodr 文件中 lane 链接信息进行赋值，不作默认假设。
-        """
-        tree = ET.parse(file_path)
-        root = tree.getroot()
-        roads = {}
-
-        junction_dict = {junc.get('id'): junc for junc in root.findall('.//junction')}
-        # 遍历所有 road 元素，构造 Road 对象
-        for road_elem in root.findall('.//road'):
-            road_id = road_elem.get('id')
-            length = float(road_elem.get('length', '0'))
-            link = road_elem.find('link')
-            predecessor = None
-            successor = None
-            if link is not None:
-                pred = link.find('predecessor')
-                succ = link.find('successor')
-                if pred is not None:
-                    predecessor = (pred.get('elementType'), pred.get('elementId'))
-                if succ is not None:
-                    successor = (succ.get('elementType'), succ.get('elementId'), succ.get('contactPoint'))
-            junction = road_elem.get('junction', "-1")
-            road_obj = Road(road_id, predecessor, successor, junction, length, on_route=False)
-            compute_reference_line(road_elem, road_obj.reference_line)
-            parse_driving_lanes(road_elem, junction_dict, road_obj)
-            
-            road_obj.compute_midpoint()
-            roads[road_id] = road_obj
-
-        return roads
+    
 
 
 

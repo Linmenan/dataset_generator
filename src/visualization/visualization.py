@@ -1,5 +1,21 @@
 import networkx as nx
+import numpy as np
 import plotly.graph_objects as go
+from typing import List
+from ..models.agent import TrafficAgent
+import math
+
+def box_points(a: TrafficAgent):
+    """返回 [(x0,y0)…x4,y4]，首尾重复以闭合。左后→左前→右前→右后"""
+    hw = a.width * 0.5
+    local = [(-a.length_rear, -hw),
+             ( a.length_front, -hw),
+             ( a.length_front,  hw),
+             (-a.length_rear,  hw),
+             (-a.length_rear, -hw)]
+    s, c = math.sin(a.hdg), math.cos(a.hdg)
+    return [(a.pos.x + lx*c - ly*s,
+             a.pos.y + lx*s + ly*c) for lx, ly in local]
 
 def generate_circle_points(center, radius, num_points=50):
     cx, cy = center
@@ -8,8 +24,50 @@ def generate_circle_points(center, radius, num_points=50):
     y_circle = (cy + radius * np.sin(theta)).tolist()
     return x_circle, y_circle
 
-def visualize_lanes(roads, current_pos, sensing_range):
-    fig = go.Figure()
+def visualize_traffic_agents(fig, traffic_agents:List[TrafficAgent])->go.Figure:
+    default_color: str = "royalblue"
+    fill_color = "rgba(65,105,225,0.22)"      # royalblue 带透明度
+
+    for ag in traffic_agents:
+        xs, ys = zip(*box_points(ag))
+
+        # 1) 安全盒
+        fig.add_trace(go.Scatter(
+            x=xs, y=ys, mode="lines",
+            line=dict(color=default_color, width=2),
+            fill="toself", fillcolor=fill_color,
+            name=ag.id)
+        )
+
+        # 2) 朝向箭头
+        fx = ag.pos.x + ag.length_front * math.cos(ag.hdg)
+        fy = ag.pos.y + ag.length_front * math.sin(ag.hdg)
+
+        fig.add_annotation(
+            x=fx, y=fy, xref="x", yref="y",
+            ax=ag.pos.x, ay=ag.pos.y, axref="x", ayref="y",
+            arrowhead=3, arrowwidth=1.5,
+            arrowcolor=default_color,
+            showarrow=True
+        )
+
+        # 3) 标签
+        fig.add_annotation(
+            x=ag.pos.x, y=ag.pos.y,
+            text=ag.id, showarrow=False,
+            font=dict(color=default_color)
+        )
+
+    fig.update_layout(
+        title="TrafficAgent safety boxes (single color)",
+        xaxis=dict(scaleanchor="y", scaleratio=1),
+        yaxis=dict(scaleanchor="x", scaleratio=1, visible=False),
+        legend_title="Agents",
+        width=700, height=500
+    )
+    return fig
+
+def visualize_lanes(fig, roads, current_pos, sensing_range)->go.Figure:
     for road in roads.values():
         for lane in road.lanes:
             if not lane.sampled_points:
@@ -57,7 +115,7 @@ def visualize_lanes(roads, current_pos, sensing_range):
         width=700,
         height=500,
     )
-    fig.show()
+    return fig
     
 def build_topology_graph_lanes(roads):
     """
@@ -76,8 +134,8 @@ def build_topology_graph_lanes(roads):
         for lane in road.lanes:
             if not lane.sampled_points:
                 continue
-            mid_index = len(lane.sampled_points) // 2
-            pos = lane.sampled_points[mid_index]
+   
+            pos = lane.midpoint
             node_id = f"{road.road_id}_lane_{lane.lane_id}"
             # 保存所属 road 的 junction 信息（用于后续着色）
             G.add_node(node_id, pos=pos, road_id=road.road_id, lane_id=lane.lane_id,
