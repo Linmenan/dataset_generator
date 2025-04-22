@@ -3,6 +3,7 @@ import numpy as np
 import plotly.graph_objects as go
 from typing import List
 from ..models.agent import TrafficAgent
+from ..scene_simulation.scene_simulator import SceneSimulator
 import math
 
 def box_points(a: TrafficAgent):
@@ -24,98 +25,241 @@ def generate_circle_points(center, radius, num_points=50):
     y_circle = (cy + radius * np.sin(theta)).tolist()
     return x_circle, y_circle
 
-def visualize_traffic_agents(fig, traffic_agents:List[TrafficAgent])->go.Figure:
-    default_color: str = "royalblue"
-    fill_color = "rgba(65,105,225,0.22)"      # royalblue 带透明度
+def visualize_traffic_agents(fig: go.FigureWidget,
+                             traffic_agents) -> go.FigureWidget:
+    """
+    更新（或新增）TrafficAgent 安全盒及其箭头、标签。
+    """
+    # 1) 安全盒 traces
+    for ag in traffic_agents:
+        name = 'ego_vehicle' if ag.id == '0' else f'agent{ag.id}'
+        xs, ys = zip(*box_points(ag))
+        default_color = "#fc5f00" if ag.id == '0' else "royalblue"
+        fill_color    = "rgba(255,0,0,0.22)" if ag.id == '0' else "rgba(65,105,225,0.22)"
+
+        # 查找已有的“闭合”scatter trace（fill="toself"）:
+        matching = [t for t in fig.data
+                    if isinstance(t, go.Scatter) 
+                       and t.name == name 
+                       and t.fill == "toself"]
+        if matching:
+            # 就地更新
+            trace = matching[0]
+            trace.x = xs
+            trace.y = ys
+            trace.line.color = default_color
+            trace.fillcolor = fill_color
+        else:
+            # 不存在则新增
+            fig.add_trace(go.Scatter(
+                x=xs, y=ys, mode="lines",
+                name=name, fill="toself", fillcolor=fill_color,
+                line=dict(color=default_color, width=2),
+                showlegend=True
+            ))
+
+    # 2) 清除旧 annotations 再添加箭头与标签
+    fig.layout.annotations = []
 
     for ag in traffic_agents:
-        xs, ys = zip(*box_points(ag))
+        default_color = "#fc5f00" if ag.id == '0' else "royalblue"
+        fx = ag.pos.x + 0.7 * ag.length_front * math.cos(ag.hdg)
+        fy = ag.pos.y + 0.7 * ag.length_front * math.sin(ag.hdg)
 
-        # 1) 安全盒
-        fig.add_trace(go.Scatter(
-            x=xs, y=ys, mode="lines",
-            line=dict(color=default_color, width=2),
-            fill="toself", fillcolor=fill_color,
-            name=ag.id)
-        )
-
-        # 2) 朝向箭头
-        fx = ag.pos.x + ag.length_front * math.cos(ag.hdg)
-        fy = ag.pos.y + ag.length_front * math.sin(ag.hdg)
-
+        # 2.1 箭头
         fig.add_annotation(
             x=fx, y=fy, xref="x", yref="y",
             ax=ag.pos.x, ay=ag.pos.y, axref="x", ayref="y",
-            arrowhead=3, arrowwidth=1.5,
-            arrowcolor=default_color,
+            arrowhead=3, arrowwidth=1.5, arrowcolor=default_color,
             showarrow=True
         )
-
-        # 3) 标签
+        # 2.2 标签
         fig.add_annotation(
             x=ag.pos.x, y=ag.pos.y,
             text=ag.id, showarrow=False,
             font=dict(color=default_color)
         )
 
-    fig.update_layout(
-        title="TrafficAgent safety boxes (single color)",
-        xaxis=dict(scaleanchor="y", scaleratio=1),
-        yaxis=dict(scaleanchor="x", scaleratio=1, visible=False),
-        legend_title="Agents",
-        width=700, height=500
-    )
     return fig
 
-def visualize_lanes(fig, roads, current_pos, sensing_range)->go.Figure:
+def visualize_lanes(fig: go.FigureWidget,
+                    sim: SceneSimulator) -> go.FigureWidget:
+    """
+    首次绘制或更新所有车道线。首次若不存在对应 trace 则新增，
+    否则就地更新 x, y 和颜色。
+    """
+    roads = sim.map_parser.roads
+
+    # 遍历所有 road / lane
     for road in roads.values():
         for lane in road.lanes:
             if not lane.sampled_points:
                 continue
-            xs, ys = zip(*lane.sampled_points)
-            if lane.in_range:
-                color = 'blue'
-            elif road.junction != "-1":
-                color = '#f27a0d'
+
+            # 解压坐标
+            xs, ys, lxs, lys, rxs, rys = zip(*[
+                (x, y, lx, ly, rx, ry)
+                for (x, y), (lx, ly), (rx, ry) in lane.sampled_points
+            ])
+
+            # 统一 label：即使 junction=-1 也给个不重复的 name
+            label_center = f"R{road.road_id}L{lane.lane_id}"
+            label_left   = label_center + "_L"
+            label_right  = label_center + "_R"
+
+            # 颜色：路口内实时查询，否则灰色
+            if road.junction != "-1":
+                color = sim.get_lane_traffic_light(road.road_id, lane.lane_id)
             else:
                 color = 'grey'
-            # label = f'Road {road.road_id} Lane {lane.lane_id} ({lane.lane_type})'
-            if road.junction =='-1':
-                label = f'R{road.road_id}L{lane.lane_id}'
+
+            # ------- 1) 中心线 -------
+
+            # 在 fig.data 中查找既有中心线 trace（mode='lines' 且 name=label_center）
+            match = next((t for t in fig.data
+                          if isinstance(t, go.Scatter)
+                             and t.mode == 'lines'
+                             and t.name == label_center), None)
+            if match:
+                # 更新坐标与样式
+                match.x = xs
+                match.y = ys
+                match.line.color = color
+                match.line.width = 2
+                match.line.dash  = 'dash'
             else:
-                label = f'R{road.road_id}L{lane.lane_id}J{road.junction}'
-            fig.add_trace(go.Scatter(
-                x=xs, y=ys,
-                mode='lines',
-                line=dict(color=color, width=2),
-                name=label
-            ))
-        
-    cx, cy = current_pos
-    fig.add_trace(go.Scatter(
-        x=[cx], y=[cy],
-        mode='markers',
-        marker=dict(color='red', size=12, symbol='x'),
-        name='Current Position'
-    ))
-    circle_x, circle_y = generate_circle_points(current_pos, sensing_range)
-    fig.add_trace(go.Scatter(
-        x=circle_x, y=circle_y,
-        mode='lines',
-        line=dict(color='red', dash='dash'),
-        name='Sensing Range'
-    ))
-    fig.update_layout(
-        title='Driving Lanes Visualization',
-        xaxis_title='X',
-        yaxis_title='Y',
-        legend_title='Legend',
-        xaxis=dict(scaleanchor="y", scaleratio=1),
-        template="plotly_white",
-        width=700,
-        height=500,
-    )
+                # 首次不存在则新增
+                fig.add_trace(go.Scatter(
+                    x=xs, y=ys, mode='lines',
+                    name=label_center, showlegend=True,
+                    line=dict(color=color, width=2, dash="dash")
+                ))
+
+            # ------- 2) 左边界 -------
+
+            match = next((t for t in fig.data
+                          if isinstance(t, go.Scatter)
+                             and t.mode == 'lines'
+                             and t.name == label_left), None)
+            if match:
+                match.x = lxs
+                match.y = lys
+            else:
+                fig.add_trace(go.Scatter(
+                    x=lxs, y=lys, mode='lines',
+                    name=label_left, showlegend=False,
+                    line=dict(color='grey', width=2, dash="solid")
+                ))
+
+            # ------- 3) 右边界 -------
+
+            match = next((t for t in fig.data
+                          if isinstance(t, go.Scatter)
+                             and t.mode == 'lines'
+                             and t.name == label_right), None)
+            if match:
+                match.x = rxs
+                match.y = rys
+            else:
+                fig.add_trace(go.Scatter(
+                    x=rxs, y=rys, mode='lines',
+                    name=label_right, showlegend=False,
+                    line=dict(color='grey', width=2, dash="solid")
+                ))
+
     return fig
+
+# def visualize_traffic_agents(fig, traffic_agents)->go.Figure:
+#     for idx, ag in enumerate(traffic_agents):
+#         default_color: str = "royalblue"
+#         fill_color = "rgba(65,105,225,0.22)"      # royalblue 带透明度
+#         name = ''
+#         if idx==0:
+#             default_color = "#fc5f00"
+#             fill_color = "rgba(255,0,0,0.22)"
+#             name = 'ego_vehicle'
+#         else:
+#             name = 'agent'+ag.id
+#         xs, ys = zip(*box_points(ag))
+#         # 1) 安全盒
+#         fig.add_trace(go.Scatter(
+#             x=xs, y=ys, mode="lines",
+#             line=dict(color=default_color, width=2),
+#             fill="toself", fillcolor=fill_color,
+#             name=name,
+#             showlegend=True,
+#             )
+#         )
+
+#         # 2) 朝向箭头
+#         fx = ag.pos.x + 0.7 * ag.length_front * math.cos(ag.hdg)
+#         fy = ag.pos.y + 0.7 * ag.length_front * math.sin(ag.hdg)
+
+#         fig.add_annotation(
+#             x=fx, y=fy, xref="x", yref="y",
+#             ax=ag.pos.x, ay=ag.pos.y, axref="x", ayref="y",
+#             arrowhead=3, arrowwidth=1.5,
+#             arrowcolor=default_color,
+#             showarrow=True
+#         )
+
+#         # 3) 标签
+#         fig.add_annotation(
+#             x=ag.pos.x, y=ag.pos.y,
+#             text=ag.id, showarrow=False,
+#             font=dict(color=default_color)
+#         )
+
+#     # fig.update_layout(
+#         # title="TrafficAgent safety boxes (single color)",
+#         # xaxis=dict(scaleanchor="y", scaleratio=1),
+#         # yaxis=dict(scaleanchor="x", scaleratio=1, visible=False),
+#         # legend_title="Agents",
+#         # width=700, height=500
+#     # )
+#     return fig
+
+# def visualize_lanes(fig, sim:SceneSimulator)->go.Figure:
+#     roads = sim.map_parser.roads
+#     for road in roads.values():
+#         for lane in road.lanes:
+#             if not lane.sampled_points:
+#                 continue
+#             xs, ys, lxs, lys, rxs, rys, = list(zip(*[(x, y, lx, ly, rx, ry)
+#                   for (x, y), (lx, ly), (rx, ry) in lane.sampled_points]))
+            
+#             if road.junction != "-1":
+#                 color = sim.get_lane_traffic_light(road.road_id, lane.lane_id)
+#             else:
+#                 color = 'grey'
+#             # label = f'Road {road.road_id} Lane {lane.lane_id} ({lane.lane_type})'
+                
+#             if road.junction =='-1':
+#                 label = f'R{road.road_id}L{lane.lane_id}'
+#             else:
+#                 label = f'R{road.road_id}L{lane.lane_id}J{road.junction}'
+#             fig.add_trace(go.Scatter(
+#                 x=xs, y=ys,
+#                 mode='lines',
+#                 line=dict(color=color, width=2, dash="dash"),
+#                 name=label,
+#                 showlegend=True,
+#             ))
+#             fig.add_trace(go.Scatter(
+#                 x=lxs, y=lys,
+#                 mode='lines',
+#                 line=dict(color='grey', width=2, dash="solid"),
+#                 name=label,
+#                 showlegend=False,
+#             ))
+#             fig.add_trace(go.Scatter(
+#                 x=rxs, y=rys,
+#                 mode='lines',
+#                 line=dict(color='grey', width=2, dash="solid"),
+#                 name=label,
+#                 showlegend=False,
+#             ))
+#     return fig
     
 def build_topology_graph_lanes(roads):
     """

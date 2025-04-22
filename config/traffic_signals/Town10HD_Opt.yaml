@@ -1,0 +1,146 @@
+controllers:
+  - id: 964          # sequence 0  → offset 0 s
+    cycle: 60
+    offset: 0
+    phases:
+      - name: green
+        duration: 25
+        signals: { "943": green }
+      - name: yellow
+        duration: 3
+        signals: { "943": yellow }
+      - name: red
+        duration: 32
+        signals: { "943": red }
+
+  - id: 968          # 同为 sequence 0 → 同 offset 0，可并列放行
+    cycle: 60
+    offset: 0
+    phases:
+      - name: green
+        duration: 25
+        signals: { "952": green }
+      - name: yellow
+        duration: 3
+        signals: { "952": yellow }
+      - name: red
+        duration: 32
+        signals: { "952": red }
+
+  - id: 972          # sequence 0
+    cycle: 60
+    offset: 0
+    phases:
+      - { duration: 25, signals: { "953": green } }
+      - { duration: 3 , signals: { "953": yellow } }
+      - { duration: 32, signals: { "953": red } }
+
+  - id: 975          # sequence 0 ，多盏灯同组
+    cycle: 60
+    offset: 0
+    phases:
+      - duration: 25
+        signals: { "957": green, "958": green }
+      - duration: 3
+        signals: { "957": yellow, "958": yellow }
+      - duration: 32
+        signals: { "957": red, "958": red }
+
+  - id: 978          # sequence 0
+    cycle: 60
+    offset: 0
+    phases:
+      - { duration: 25, signals: { "962": green } }
+      - { duration: 3 , signals: { "962": yellow } }
+      - { duration: 32, signals: { "962": red } }
+
+  - id: 981          # sequence 0
+    cycle: 60
+    offset: 0
+    phases:
+      - { duration: 25, signals: { "963": green } }
+      - { duration: 3 , signals: { "963": yellow } }
+      - { duration: 32, signals: { "963": red } }
+
+  # ---------- sequence 1 (offset 15 s) ----------
+  - id: 965
+    cycle: 60
+    offset: 15
+    phases:
+      - { duration: 25, signals: { "945": green } }
+      - { duration: 3 , signals: { "945": yellow } }
+      - { duration: 32, signals: { "945": red } }
+
+  - id: 969
+    cycle: 60
+    offset: 15
+    phases:
+      - { duration: 25, signals: { "951": green } }
+      - { duration: 3 , signals: { "951": yellow } }
+      - { duration: 32, signals: { "951": red } }
+
+  - id: 976
+    cycle: 60
+    offset: 15
+    phases:
+      - { duration: 25, signals: { "959": green } }
+      - { duration: 3 , signals: { "959": yellow } }
+      - { duration: 32, signals: { "959": red } }
+
+  - id: 979
+    cycle: 60
+    offset: 15
+    phases:
+      - { duration: 25, signals: { "961": green } }
+      - { duration: 3 , signals: { "961": yellow } }
+      - { duration: 32, signals: { "961": red } }
+
+  # ---------- sequence 2 (offset 30 s) ----------
+  - id: 966
+    cycle: 60
+    offset: 30
+    phases:
+      - { duration: 25, signals: { "944": green } }
+      - { duration: 3 , signals: { "944": yellow } }
+      - { duration: 32, signals: { "944": red } }
+
+  - id: 970
+    cycle: 60
+    offset: 30
+    phases:
+      - { duration: 25, signals: { "949": green } }
+      - { duration: 3 , signals: { "949": yellow } }
+      - { duration: 32, signals: { "949": red } }
+
+  - id: 974
+    cycle: 60
+    offset: 30
+    phases:
+      - { duration: 25, signals: { "954": green } }
+      - { duration: 3 , signals: { "954": yellow } }
+      - { duration: 32, signals: { "954": red } }
+
+  - id: 977
+    cycle: 60
+    offset: 30
+    phases:
+      - { duration: 25, signals: { "958": green } }
+      - { duration: 3 , signals: { "958": yellow } }
+      - { duration: 32, signals: { "958": red } }
+
+  - id: 980
+    cycle: 60
+    offset: 30
+    phases:
+      - { duration: 25, signals: { "960": green } }
+      - { duration: 3 , signals: { "960": yellow } }
+      - { duration: 32, signals: { "960": red } }
+
+  # ---------- sequence 3 (offset 45 s) ----------
+  - id: 971
+    cycle: 60
+    offset: 45
+    phases:
+      - { duration: 25, signals: { "950": green } }
+      - { duration: 3 , signals: { "950": yellow } }
+      - { duration: 32, signals: { "950": red } }

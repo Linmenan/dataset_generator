@@ -1,11 +1,14 @@
 import xml.etree.ElementTree as ET
 from ..models.map_elements import *
+from ..models.signal_elements import *
 from ..utils.sampling import *
+import yaml
 
 
 class MapParser:
-    def __init__(self, file_path) -> None:
+    def __init__(self, file_path='', yaml_path='') -> None:
         self.file_path = file_path
+        self.yaml_path = yaml_path
         self.tree = ET.parse(file_path)
         self.roads = {}
         self.traffic_lights = {} # traffic light id 与 Controlle对象构成的字典
@@ -19,9 +22,9 @@ class MapParser:
         """
         self.roads = {}
         root = self.tree.getroot()
-        junction_dict = {junc.get('id'): junc for junc in root.findall('.//junction')}
+        
         # 遍历所有 road 元素，构造 Road 对象
-        for road_elem in root.findall('.//road'):
+        for road_elem in root.findall('./road'):
             road_id = road_elem.get('id')
             length = float(road_elem.get('length', '0'))
             link = road_elem.find('link')
@@ -60,6 +63,39 @@ class MapParser:
             road_obj.compute_midpoint()
             self.roads[road_id] = road_obj
 
+
+        for current_road in self.roads.values():
+            road_id = current_road.road_id
+            for current_lane in current_road.lanes:
+                lane_id = current_lane.lane_id
+
+                # 1) 检查前驱的“后续”是否包含自己
+                for pred in list(current_lane.predecessor):
+                    pred_road_id, pred_lane_id = str(pred[0]), str(pred[1])
+                    pred_road = self.roads.get(pred_road_id)
+                    if not pred_road:
+                        continue
+                    # 在前驱 road 中找对应的 lane 对象
+                    for pl in pred_road.lanes:
+                        if pl.lane_id == pred_lane_id:
+                            # 如果 pl.successor 中没有当前 lane，就添加
+                            if (road_id, lane_id) not in pl.successor:
+                                pl.successor.append((road_id, lane_id))
+                            break
+
+                # 2) 检查后续的“前驱”是否包含自己
+                for succ in list(current_lane.successor):
+                    succ_road_id, succ_lane_id = str(succ[0]), str(succ[1])
+                    succ_road = self.roads.get(succ_road_id)
+                    if not succ_road:
+                        continue
+                    for sl in succ_road.lanes:
+                        if sl.lane_id == succ_lane_id:
+                            if (road_id, lane_id) not in sl.predecessor:
+                                sl.predecessor.append((road_id, lane_id))
+                            break
+        # for junc in root.findall('./junction'):
+
     def parse_objects(self, road_elem, road_obj):
         """
         解析 road 元素中的 objects 元素，提取信号灯、交通标志等对象信息，并构造 Object 对象。
@@ -83,33 +119,42 @@ class MapParser:
                 signal_id = signal_elem.get('id')
                 s = signal_elem.get('s')
                 t = signal_elem.get('t')
-                z_offset = signal_elem.get('zOffset')
-                road_obj.signals.append(Signal(signal_id, s, t, z_offset))
-            if (len(road_obj.signals) > 0):
-                for signal_reference_elem in signals_elem.findall('signalReference'):
-                    id = signal_reference_elem.get('id')
-                    validity_elem = signal_reference_elem.find('validity')
-                    if validity_elem is not None:
-                        from_lane = validity_elem.get('fromLane')
-                        to_lane = validity_elem.get('toLane')
-                    user_data_elem = signal_reference_elem.find('userData')
-                    if user_data_elem is not None:
-                        vector_signal_elem = user_data_elem.find('vectorSignal')
-                        if vector_signal_elem is not None:
-                            turn_relation = vector_signal_elem.get('turnRelation')
-                            reference = tuple({id, from_lane, to_lane, turn_relation})
-                            road_obj.signals[0].reference.append(reference)
+                road_obj.signals.append(Signal(id=signal_id, s=s, t=t, type='signal'))
+
+            for signal_reference_elem in signals_elem.findall('signalReference'):
+                id = signal_reference_elem.get('id')
+                s = signal_reference_elem.get('s')
+                t = signal_reference_elem.get('t')
+                validity_elem = signal_reference_elem.find('validity')
+                if validity_elem is not None:
+                    from_lane = validity_elem.get('fromLane')
+                    to_lane = validity_elem.get('toLane')
+                user_data_elem = signal_reference_elem.find('userData')
+                if user_data_elem is not None:
+                    vector_signal_elem = user_data_elem.find('vectorSignal')
+                    if vector_signal_elem is not None:
+                        turn_relation = vector_signal_elem.get('turnRelation')
+                        reference = Signal(id=id, s=s, t=t, type='reference', from_lane=from_lane, to_lane=to_lane, turn_relation=turn_relation)
+                        road_obj.signals.append(reference)
             
     def parse_traffic_lights(self):
+        with open(self.yaml_path, 'r', encoding='utf-8') as f:
+            cfg = yaml.safe_load(f)
         root = self.tree.getroot()
-        for controller_elem in root.findall('.//controller'):
+        for controller_elem in root.findall('./controller'): 
             id = controller_elem.get('id')
             sequence = controller_elem.get('sequence')
             controller = Controller(id, sequence)
             for control_elem in controller_elem.findall('control'):
                 signal_id = control_elem.get('signalId')
                 type = control_elem.get('type')
-                controller.controls[signal_id] = Control(signal_id, type)
+                controller.controls.append(Control(signal_id, type))
+            ctrl_cfg = next(
+                (item for item in cfg["controllers"] if str(item["id"]) == id),
+                None
+            )
+            if ctrl_cfg is not None:
+                controller.signal_controller = SignalController(ctrl_cfg)
             self.traffic_lights[id] = controller
 
     def compute_reference_line(self, road_elem, ref_line):
@@ -231,7 +276,7 @@ class MapParser:
         结果直接更新 road_obj.lanes（仅保留 type 为 "driving" 的车道）。
         """
         root = self.tree.getroot()
-        junction_dict = {junc.get('id'): junc for junc in root.findall('.//junction')}
+        junction_dict = {junc.get('id'): junc for junc in root.findall('./junction')}
         # 将 s_values 转为 numpy 数组
         s_arr = np.array(road_obj.reference_line.s_values)
         baseline = road_obj.reference_line.sampled_points
@@ -320,6 +365,7 @@ class MapParser:
                                     lane_pred.append((conn.get('connectingRoad'),link.get('to')))
                                     # print(f"找到前续 {(conn.get('connectingRoad'),link.get('to'))}")
                                     break
+              
                                     
                 if road_succ[0]=='road':
                     # 读取 lane 的链接关系（若存在）
@@ -329,8 +375,8 @@ class MapParser:
                         if succ_elem is not None:
                             lane_succ.append((road_succ[1],succ_elem.get('id')))
                             # print(f"找到后继 {(road_succ[1],succ_elem.get('id'))}")
-                elif road_pred[0]=='junction':
-                    junction = junction_dict.get(road_pred[1])
+                elif road_succ[0]=='junction':
+                    junction = junction_dict.get(road_succ[1])
                     for conn in junction.findall('connection'):
                         if conn.get('incomingRoad')==road_obj.road_id:
                             for link in conn.findall('laneLink'):
@@ -338,6 +384,7 @@ class MapParser:
                                     lane_succ.append((conn.get('connectingRoad'),link.get('to')))
                                     # print(f"找到后继 {(conn.get('connectingRoad'),link.get('to'))}")
                                     break
+
 
                 left_all.append((lane_id, sw_offset, a_w, b_w, c_w, d_w, lane_type, lane_pred, lane_succ, travel_dir, lane_change))
             left_all.sort(key=lambda x: x[0])
@@ -348,24 +395,39 @@ class MapParser:
             w_current = offset_poly(s_arr, sw_offset, a_w, b_w, c_w, d_w)
             if lane_type == "driving":
                 current_offset = global_offset + cum_width_left + w_current/2.0
+                left_offset = global_offset + cum_width_left
+                right_offset = global_offset + cum_width_left + w_current
                 sampled_points = []
                 headings = []
-                for (pt, local_hdg, offset_val) in zip(baseline, baseline_headings, current_offset):
+                for (pt, local_hdg, offset_val, l_offset_val, r_offset_val) in zip(baseline, baseline_headings, current_offset, left_offset, right_offset):
                     x_ref, y_ref = pt
                     x_lane = x_ref - offset_val * np.sin(local_hdg)
                     y_lane = y_ref + offset_val * np.cos(local_hdg)
-                    sampled_points.append((x_lane, y_lane))
+                    l_x_lane = x_ref - l_offset_val * np.sin(local_hdg)
+                    l_y_lane = y_ref + l_offset_val * np.cos(local_hdg)
+                    r_x_lane = x_ref - r_offset_val * np.sin(local_hdg)
+                    r_y_lane = y_ref + r_offset_val * np.cos(local_hdg)
+                    sampled_points.append([(x_lane, y_lane),(l_x_lane, l_y_lane),(r_x_lane, r_y_lane)])
                     if travel_dir=='backward':
                         headings.append(local_hdg + np.pi)
                     else:
                         headings.append(local_hdg)
                 lane_obj = Lane(lane_id, "left", sampled_points, headings=headings, in_range=False, travel_dir=travel_dir, lane_change=lane_change)
+                
                 # 记录从 lane 自身获取的链接信息（可能只有 lane id，没有 Road 信息）
-                if lane_pred is not None:
-                    lane_obj.predecessor = lane_pred
-                if lane_succ is not None:
-                    lane_obj.successor = lane_succ
+                if travel_dir=='backward':
+                    if lane_pred is not None:
+                        lane_obj.successor = lane_pred
+                    if lane_succ is not None:
+                        lane_obj.predecessor = lane_succ
+                else:
+                    if lane_pred is not None:
+                        lane_obj.predecessor = lane_pred
+                    if lane_succ is not None:
+                        lane_obj.successor = lane_succ
                 lane_obj.compute_midpoint()
+                # print(f"road {road_obj.road_id} lane {lane_id} lane_obj:{lane_obj}")
+                # print(f"lane_obj.successor:{lane_obj.successor}")
                 driving_lanes.append(lane_obj)
             cum_width_left = cum_width_left + w_current
 
@@ -425,7 +487,8 @@ class MapParser:
                                     lane_pred.append((conn.get('connectingRoad'),link.get('to')))
                                     # print(f"找到前续 {(conn.get('connectingRoad'),link.get('to'))}")
                                     break
-                                    
+
+
                 if road_succ[0]=='road':
                     # 读取 lane 的链接关系（若存在）
                     link_elem = lane.find('link')
@@ -434,8 +497,8 @@ class MapParser:
                         if succ_elem is not None:
                             lane_succ.append((road_succ[1],succ_elem.get('id')))
                             # print(f"找到后继 {(road_succ[1],succ_elem.get('id'))}")
-                elif road_pred[0]=='junction':
-                    junction = junction_dict.get(road_pred[1])
+                elif road_succ[0]=='junction':
+                    junction = junction_dict.get(road_succ[1])
                     for conn in junction.findall('connection'):
                         if conn.get('incomingRoad')==road_obj.road_id:
                             for link in conn.findall('laneLink'):
@@ -443,6 +506,7 @@ class MapParser:
                                     lane_succ.append((conn.get('connectingRoad'),link.get('to')))
                                     # print(f"找到后继 {(conn.get('connectingRoad'),link.get('to'))}")
                                     break
+
                                 
                 right_all.append((lane_id, sw_offset, a_w, b_w, c_w, d_w, lane_type, lane_pred, lane_succ, travel_dir, lane_change))
             right_all.sort(key=lambda x: x[0], reverse=True)
@@ -453,23 +517,37 @@ class MapParser:
             w_current = offset_poly(s_arr, sw_offset, a_w, b_w, c_w, d_w)
             if lane_type == "driving":
                 current_offset = global_offset - (cum_width_right + w_current/2.0)
+                left_offset = global_offset - cum_width_right
+                right_offset = global_offset - (cum_width_right + w_current)
                 sampled_points = []
                 headings = []
-                for (pt, local_hdg, offset_val) in zip(baseline, baseline_headings, current_offset):
+                for (pt, local_hdg, offset_val, l_offset_val, r_offset_val) in zip(baseline, baseline_headings, current_offset, left_offset, right_offset):
                     x_ref, y_ref = pt
                     x_lane = x_ref - offset_val * np.sin(local_hdg)
                     y_lane = y_ref + offset_val * np.cos(local_hdg)
-                    sampled_points.append((x_lane, y_lane))
+                    l_x_lane = x_ref - l_offset_val * np.sin(local_hdg)
+                    l_y_lane = y_ref + l_offset_val * np.cos(local_hdg)
+                    r_x_lane = x_ref - r_offset_val * np.sin(local_hdg)
+                    r_y_lane = y_ref + r_offset_val * np.cos(local_hdg)
+                    sampled_points.append([(x_lane, y_lane),(l_x_lane, l_y_lane),(r_x_lane, r_y_lane)])
                     if travel_dir=='backward':
                         headings.append(local_hdg + np.pi)
                     else:
                         headings.append(local_hdg)
                 lane_obj = Lane(lane_id, "right", sampled_points, headings=headings, in_range=False, travel_dir=travel_dir, lane_change=lane_change)
-                if lane_pred is not None:
-                    lane_obj.predecessor = lane_pred
-                if lane_succ is not None:
-                    lane_obj.successor = lane_succ
+                if travel_dir=='backward':
+                    if lane_pred is not None:
+                        lane_obj.successor = lane_pred
+                    if lane_succ is not None:
+                        lane_obj.predecessor = lane_succ
+                else:
+                    if lane_pred is not None:
+                        lane_obj.predecessor = lane_pred
+                    if lane_succ is not None:
+                        lane_obj.successor = lane_succ
                 lane_obj.compute_midpoint()
+                # print(f"road {road_obj.road_id} lane {lane_id} lane_obj:{lane_obj}")
+                # print(f"lane_obj.successor:{lane_obj.successor}")
                 driving_lanes.append(lane_obj)
             cum_width_right = cum_width_right + w_current
 
