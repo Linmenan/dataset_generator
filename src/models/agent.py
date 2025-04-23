@@ -10,7 +10,7 @@ class TrafficAgent:
     def __init__(
         self,
         id: str = "",
-        pos: Point2D = None,          # 位置 (m, m)
+        pos: Point2D=Point2D(0, 0),          # 位置 (m, m)
         hdg: float = 0.0,                    # 航向角 (rad, 左正)
         speed: float = 0.0,                  # 纵向车速 (m/s)
         curvature: float = 0.0,              # 行驶曲率 (1/m)
@@ -18,7 +18,7 @@ class TrafficAgent:
         length_front: float = 3.945,         # 前保险杠到质心距离 (m)
         length_rear: float = 1.08,           # 后保险杠到质心距离 (m)
         wheel_base: float = 2.97,            # 轴距 (m)
-        speed_limit: float = 20.0,                 # 最高速度 (m/s)
+        speed_limit: float = 10.0,                 # 最高速度 (m/s)
         a_max: float = 2.0,                  # 最大加速度 (m/s²)
         a_min: float = -5.0,                 # 最大减速度 (m/s²)
         agent_type: str = "car",             # "car" | "truck" | ...

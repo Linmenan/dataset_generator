@@ -51,7 +51,7 @@ class Lane:
     def __init__(self, lane_id, lane_type, sampled_points, headings, travel_dir, lane_change, in_range=False):
         self.lane_id = str(lane_id)      # 车道编号
         self.lane_type = lane_type       # "left" 或 "right"
-        self.sampled_points = sampled_points  # 采样点列表，用于绘制车道中心线、左边界、右边界线
+        self.sampled_points = sampled_points  # [[(),(),()],[(),(),()]]采样点列表，用于绘制车道中心线、左边界、右边界线
         self.travel_dir = str(travel_dir) # 行驶方向包含 undirected 、 backward 、 forward 三种   
         self.lane_change = str(lane_change) # 变道选项包含 none 、 both 、 increase 、 decrease 四种   
         self.headings = headings  # 采样点列表，用于绘制车道中心线
@@ -120,6 +120,27 @@ class Lane:
         # undirected / forward 保持正值
 
         return s
+    def get_ref_line(self)-> List[Point2D]:
+        """
+        返回车道中心线的 Point2D 列表：
+        - 对于 forward 或 undirected，按采样顺序返回；
+        - 对于 backward，返回逆序的采样中心线。
+        """
+        # 如果没有采样点，返回空列表
+        if not self.sampled_points:
+            return []
+
+        # 1) 从 sampled_points 中提取中心点 (第一个元素)
+        ref_pts = [Point2D(x, y) 
+                   for (x, y), (_, _), (_, _) in self.sampled_points]
+
+        # 2) 根据行驶方向决定顺序
+        if self.travel_dir == "backward":
+            ref_pts.reverse()
+
+        return ref_pts
+
+        
 
 # 定义 Road 类
 class Road:

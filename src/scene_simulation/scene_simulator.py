@@ -1,11 +1,3 @@
-'''
-Author: linmenan 314378011@qq.com
-Date: 2025-04-21 10:57:44
-LastEditors: linmenan 314378011@qq.com
-LastEditTime: 2025-04-22 20:10:19
-FilePath: /dataset_generator/src/scene_simulation/scene_simulator.py
-Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
-'''
 from ..models.agent import *
 from ..parsers.parsers import MapParser
 from ..models.map_elements import *
@@ -21,6 +13,9 @@ import math
 from datetime import datetime
 from typing import Callable, Awaitable, Optional, List
 
+from pyqtgraph.Qt import QtWidgets
+from ..visualization.visualization import SimView
+
 class Mode(enum.Enum):   # enum 支持位运算 :contentReference[oaicite:0]{index=0}
     SYNC = "sync"
     ASYNC = "async"
@@ -29,6 +24,7 @@ class SceneSimulator:
             self, 
             mode:Mode = Mode.SYNC, 
             step:float = 0.05, 
+            plot_step:int = 5, 
             map_file_path='', 
             yaml_path='', 
             perception_range=0, 
@@ -40,6 +36,7 @@ class SceneSimulator:
         """
         self.mode = mode
         self.step = step
+        self.plot_step = plot_step
 
         self.sim_frame:int = 0
         self._sim_time: float = 0.0                        # 累积仿真时间
@@ -52,13 +49,10 @@ class SceneSimulator:
         self.ego_vehicle = None
         self.agents = []
         self.map_parser = MapParser(file_path=map_file_path,yaml_path=yaml_path)
-        self.fig = go.FigureWidget()
-        self.fig.update_layout(
-            title="Traffic Map",
-            xaxis=dict(scaleanchor="y", scaleratio=1),
-            yaxis=dict(scaleanchor="x", scaleratio=1, visible=False),
-            width=1200, height=800
-        )
+        self.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+        # 创建并 show 视图
+        self.view = SimView(self)
+        self.view.show()
         print("simulator init")
     # ----------- 公共查询接口 -----------
     @property
@@ -79,21 +73,14 @@ class SceneSimulator:
     # ----------- 主循环 (同步) -----------
     def step_once(self):
         """外部驱动一次步进 (同步模式用)"""
-        from ..visualization.visualization import visualize_traffic_agents,visualize_lanes
         self._sim_time += self.step
         self.sim_frame += 1
         #  zzzzzz
         self.update_states()
-        if self.mode is not Mode.SYNC:
-            if self.sim_frame%20 == 0:
-                # visualize_traffic_agents(self.fig, [self.ego_vehicle]+self.agents)
-                visualize_lanes(self.fig, self)
-                self.fig.update_layout(
-                    title="Traffic Map",
-                    xaxis=dict(scaleanchor="y", scaleratio=1),
-                    yaxis=dict(scaleanchor="x", scaleratio=1, visible=False),
-                    width=1200, height=800
-                )
+        if self.sim_frame%self.plot_step == 0:
+            self.view.update()
+            
+   
         
     # ----------- 主循环 (异步) -----------
     async def _run_async(self):
@@ -102,7 +89,6 @@ class SceneSimulator:
         try:
             while self._running:
                 await asyncio.sleep(self.step)      # 让 event‑loop 调度其他任务 :contentReference[oaicite:3]{index=3}
-                self._sim_time += self.step
                 #  zzzzzz
                 self.step_once()
                 
@@ -137,7 +123,7 @@ class SceneSimulator:
                 index = random.randrange(len(lane.sampled_points))
                 rear_point = lane.sampled_points[index][0]
                 hdg = lane.headings[index]
-                speed = 1.0
+                speed = 0.0
                 vehicle = EgoVehicle(id=str(0), 
                                      pos=Point2D(rear_point[0], 
                                                  rear_point[1]), 
@@ -161,7 +147,7 @@ class SceneSimulator:
                 index = random.randrange(len(lane.sampled_points))
                 rear_point = lane.sampled_points[index][0]
                 hdg = lane.headings[index]
-                speed = 1.0
+                speed = 0.0
                 traffic_agent = TrafficAgent(id = str(len(self.agents)+1), 
                                              pos=Point2D(rear_point[0], 
                                                          rear_point[1]), 
@@ -238,8 +224,67 @@ class SceneSimulator:
     def compute_acceleration(self, target_speed: float, current_speed: float) -> float:
         return (target_speed**2 - current_speed**2)/(2)
     def compute_stop_acceleration(self, current_speed: float, remain_distance: float) -> float:
-        return (0.0 - current_speed**2)/(2*remain_distance)
+        return (0.0 - current_speed**2)/(2*remain_distance+1e-3)
     
+    def pure_pursuit_curvature(self,
+        position: Point2D,
+        path: List[Point2D],
+        lookahead: float
+    ) -> float:
+        """
+        纯追踪法计算曲率 κ：
+        κ = 2 * sin(alpha) / L_d
+        其中 alpha = 目标点方向与车辆航向的夹角，
+            L_d    = lookahead 预瞄距离。
+
+        参数:
+        position  当前车辆质心位置
+        path      参考线采样点列表，至少两个点
+        lookahead 预瞄距离
+
+        返回:
+        曲率 κ；若输入不合法或找不到预瞄点，返回 None。
+        """
+
+        # 1) 找到最近的路径点索引
+        dists = [(pt.x - position.x)**2 + (pt.y - position.y)**2 for pt in path]
+        idx0 = min(range(len(path)), key=lambda i: dists[i])
+
+        # 2) 在后续点中寻找首个满足距离 >= lookahead 的预瞄点
+        target: Optional[Point2D] = None
+        L2 = lookahead**2
+        for pt in path[idx0+1:]:
+            if (pt.x - position.x)**2 + (pt.y - position.y)**2 >= L2:
+                target = pt
+                break
+        # 若后面都不够远，就用最后一个点
+        if target is None:
+            target = path[-1]
+
+        # 3) 估计车辆航向：取最近点与其下一个点的连线方向
+        if idx0 < len(path) - 1:
+            next_pt = path[idx0 + 1]
+        else:
+            # 如果最近点已经是最后一个，则退而取前一个
+            next_pt = path[idx0 - 1]
+        heading = math.atan2(next_pt.y - path[idx0].y,
+                            next_pt.x - path[idx0].x)
+
+        # 4) 计算车头指向“预瞄点”的角度 alpha
+        dx = target.x - position.x
+        dy = target.y - position.y
+        angle_to_target = math.atan2(dy, dx)
+
+        # 归一化角度差到 [-pi, +pi]
+        alpha = angle_to_target - heading
+        alpha = (alpha + math.pi) % (2*math.pi) - math.pi
+
+        # 5) 计算曲率 κ = 2*sin(alpha) / L_d
+        # sin(alpha) 左转为正，右转为负
+        curvature = 2 * math.sin(alpha) / lookahead
+
+        return curvature
+
     def get_lane_traffic_light(self, road_id: str, lane_id: str) -> str:
         road = self.get_road(road_id)
         lane = self.get_lane(road_id, lane_id)
@@ -262,15 +307,19 @@ class SceneSimulator:
         return light
 
     def update_states(self)->None:
+        lookahead = 5.0  # 或者从配置获取
         for current_agent in self.agents:
             road_id = current_agent.current_road_index
             lane_id = current_agent.current_lane_index
             current_lane = self.get_lane(road_id, lane_id)
             current_s = current_lane.calculate_cumulate_s(current_agent.pos)
+            remain_s = current_lane.length - current_s
             current_v = current_agent.speed
             closest_agent = None
             min_distance = float('inf')
-            for agent in self.agents:
+
+            #更新前方最近智能体
+            for agent in [self.ego_vehicle]+self.agents:
                 if agent.id == current_agent.id:
                     continue
                 if road_id == current_agent.current_road_index and lane_id == current_agent.current_lane_index:
@@ -280,31 +329,54 @@ class SceneSimulator:
                         if delta_s < min_distance:
                             min_distance = delta_s
                             closest_agent = agent
-            if road_id == self.ego_vehicle.current_road_index and lane_id == self.ego_vehicle.current_lane_index:
-                ego_vehicle_s = current_lane.calculate_cumulate_s(self.ego_vehicle.pos)
-                if ego_vehicle_s > current_s:
-                    delta_s = ego_vehicle_s - current_s
-                    if delta_s < min_distance:
-                            min_distance = delta_s
-                            closest_agent = agent
             if closest_agent is not None:
                 agent_v = closest_agent.speed
                 acc = self.acc_idm(delta_s, current_v, agent_v, v0=current_agent.speed_limit)
                 current_agent.step(a_cmd = acc,dt = self.step)
             road = self.get_road(road_id)
+            acc_cmd = 0
+            curvature_cmd = 0
             
+            #纵向控制，路口状况判断
             if road.junction != "-1":
-                current_agent.step(a_cmd = self.compute_acceleration(3.0, current_v), dt = self.step)
+                next_lane_index = 0
+                acc_cmd = self.compute_acceleration(3.0, current_v)
             else:
                 if road.successor[0] == "road":
-                    current_agent.step(a_cmd = self.compute_acceleration(3.0, current_v), dt = self.step)
+                    next_lane_index = 0
+                    acc_cmd = self.compute_acceleration(3.0, current_v)
                 else:
                     next_lane_index = random.randrange(len(current_lane.successor))
                     color = self.get_lane_traffic_light(current_lane.successor[next_lane_index][0], current_lane.successor[next_lane_index][1])
                     if color == 'green' or color == 'grey':
-                        current_agent.step(a_cmd = self.compute_acceleration(3.0, current_v), dt = self.step)
+                        acc_cmd = self.compute_acceleration(3.0, current_v)
                     else:
                         delta_s = current_lane.length - current_s
-                        current_agent.step(a_cmd = self.compute_stop_acceleration(current_v, delta_s), dt = self.step)
+                        acc_cmd = self.compute_stop_acceleration(current_v, delta_s)
+            
+            #横向控制
+            # 1) 得到当前车道的参考线
+            ref_line = current_lane.get_ref_line()  # List[Point2D]
 
-                    
+            # 2) 如果剩余 < lookahead，拼接下一车道的参考线
+            if remain_s < lookahead and current_lane.successor:
+                # 取第一个后继车道
+                next_road_id, next_lane_id = current_lane.successor[next_lane_index]
+                next_lane = self.get_lane(next_road_id, next_lane_id)
+                next_ref = next_lane.get_ref_line()
+                # 只拼接 next_ref 的前 lookahead 段
+                ref_line = ref_line + next_ref
+
+            # 3) 调用纯追踪算法计算曲率
+            curvature_cmd = self.pure_pursuit_curvature(
+                position=current_agent.pos,
+                path=ref_line,
+                lookahead=lookahead
+            )
+            current_agent.step(a_cmd = acc_cmd, cur_cmd = curvature_cmd, dt = self.step)
+
+            #更新当前道路和车道
+            if remain_s < 0.1:
+                if current_lane.successor:
+                    current_agent.current_road_index = current_lane.successor[next_lane_index][0]
+                    current_agent.current_lane_index = current_lane.successor[next_lane_index][1]
