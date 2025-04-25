@@ -49,7 +49,7 @@ class SimView(QtWidgets.QWidget):
     创建时先绘制所有车道；每次 update() 只更新颜色和多边形顶点，
     完全在 GPU/Qt 侧渲染，性能大幅提升。
     """
-    def __init__(self, sim, size=(1200, 800), title="Real-Time Traffic"):
+    def __init__(self, sim, size=(900, 600), title="Real-Time Traffic"):
         super().__init__(parent=None)
         self.sim = sim
         
@@ -80,7 +80,12 @@ class SimView(QtWidgets.QWidget):
         self.lane_curves = {}    # {(road_id, lane_id): PlotDataItem}
         self.agent_items = {}    # {agent.id: QGraphicsPolygonItem}
         self.agent_arrows  = {}   # {agent.id: ArrowItem}
-        
+        self.agent_texts = {}  # {agent.id: TextItem}
+        self.text_style = {
+            "color": "black",
+            "font-size": "10pt",
+            "anchor": (0.5, 0.5),  # 文本锚点位于安全盒顶部中心
+        }
         self._init_lanes()
 
         # 新增：临时路径存储
@@ -217,6 +222,19 @@ class SimView(QtWidgets.QWidget):
                 # 更新位置和角度
                 arrow.setPos(center_pos[0], center_pos[1])
                 arrow.setStyle(angle=angle_deg)
+            # ---- 新增：更新ID文本 ----
+            # 计算文本位置：安全盒顶部中点（取左前和右前点的中点）
+            text_item = self.agent_texts.get(ag.id)
+            if text_item is None:
+                text_item = TextItem(
+                    text=ag.id,
+                    color=self.text_style["color"],
+                    anchor=self.text_style["anchor"],
+                )
+                text_item.setFont(QtGui.QFont("Arial", 10))
+                self.plot.addItem(text_item)
+                self.agent_texts[ag.id] = text_item
+            text_item.setPos(ag.pos.x, ag.pos.y)
 
         # ---- 3) 更新外部信息标签 ----
         t = self.sim.sim_time

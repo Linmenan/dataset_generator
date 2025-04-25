@@ -48,8 +48,9 @@ class Object:
 
 # 定义 Lane 类
 class Lane:
-    def __init__(self, lane_id, lane_type, sampled_points, headings, widths, hauls, travel_dir, lane_change, in_range=False):
+    def __init__(self, belone_road, lane_id, lane_type, sampled_points, headings, widths, hauls, travel_dir, lane_change, in_range=False):
         self.lane_id = str(lane_id)      # 车道编号
+        self.belone_road = belone_road
         self.lane_type = lane_type       # "left" 或 "right"位于道路的哪一侧
         self.sampled_points = sampled_points  # [[(p1),(lp1),(rp1)],...,[(pn),(lpn),(rpn)]]采样点列表，用于绘制车道中心线、左边界、右边界线
         self.travel_dir = str(travel_dir) # 行驶方向包含 undirected 、 backward 、 forward 三种   
@@ -167,7 +168,7 @@ class Road:
         self.predecessor = predecessor  # 例如 (elementType, elementId) 或 None
         self.successor = successor      # 例如 (elementType, elementId, contactPoint) 或 None
         self.junction = str(junction)   # "-1" 表示无 junction，否则为 junction id
-        self.type = type        # 
+        self.type = type                # 
         self.speed_limit = speed_limit  # 
         self.on_route = on_route        # 全局路径规划用，默认 False
         self.lanes = []                 # 存放 Lane 对象（仅解析 type="driving" 的车道）

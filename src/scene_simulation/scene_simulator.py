@@ -46,7 +46,9 @@ class SceneSimulator:
         self._running = False
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
-
+        self.cruising_speed = 10.0
+        self.crossing_speed = 5.0
+        self.need_stop = False
         self.perception_range = perception_range
         self.ego_vehicle = None
         self.agents = []
@@ -122,47 +124,49 @@ class SceneSimulator:
             road = self.map_parser.roads[k]
             if (road.junction == "-1"):
                 lane = random.choice(road.lanes)
-                index = random.randrange(len(lane.sampled_points))
-                rear_point = lane.sampled_points[index][0]
-                hdg = lane.headings[index]
-                speed = 0.0
-                vehicle = EgoVehicle(id=str(0), 
-                                     pos=Point2D(rear_point[0], 
-                                                 rear_point[1]), 
-                                     hdg=hdg, speed=speed)
-                collision = False
-                for agent in self.agents:
-                    if is_collision(vehicle, agent):
-                        collision = True
-                        break
-                if not collision:
-                    self.ego_vehicle = vehicle
-                    self.ego_vehicle.current_road_index = road.road_id
-                    self.ego_vehicle.current_lane_index = lane.lane_id
+                if lane.length>10.0 and len(lane.sampled_points)>10:
+                    index = random.randrange(len(lane.sampled_points))
+                    rear_point = lane.sampled_points[index][0]
+                    hdg = lane.headings[index]
+                    speed = 0.0
+                    vehicle = EgoVehicle(id=str(0), 
+                                        pos=Point2D(rear_point[0], 
+                                                    rear_point[1]), 
+                                        hdg=hdg, speed=speed)
+                    collision = False
+                    for agent in self.agents:
+                        if is_collision(vehicle, agent):
+                            collision = True
+                            break
+                    if not collision:
+                        self.ego_vehicle = vehicle
+                        self.ego_vehicle.current_road_index = road.road_id
+                        self.ego_vehicle.current_lane_index = lane.lane_id
 
     def generate_traffic_agents(self, number = 0):
         while len(self.agents) < number:   
             k = random.choice(list(self.map_parser.roads))
             road = self.map_parser.roads[k]
-            if (road.junction == "-1"):
+            if (road.junction == "-1") :
                 lane = random.choice(road.lanes)
-                index = random.randrange(len(lane.sampled_points))
-                rear_point = lane.sampled_points[index][0]
-                hdg = lane.headings[index]
-                speed = 0.0
-                traffic_agent = TrafficAgent(id = str(len(self.agents)+1), 
-                                             pos=Point2D(rear_point[0], 
-                                                         rear_point[1]), 
-                                             hdg=hdg, speed=speed)
-                collision = False
-                for agent in self.agents:
-                    if is_collision(traffic_agent, agent):
-                        collision = True
-                        break
-                if not collision:
-                    traffic_agent.current_road_index = road.road_id
-                    traffic_agent.current_lane_index = lane.lane_id
-                    self.agents.append(traffic_agent) 
+                if lane.length>10.0 and len(lane.sampled_points)>10:
+                    index = random.randrange(5,len(lane.sampled_points)-5)
+                    rear_point = lane.sampled_points[index][0]
+                    hdg = lane.headings[index]
+                    speed = 0.0
+                    traffic_agent = TrafficAgent(id = str(len(self.agents)+1), 
+                                                pos=Point2D(rear_point[0], 
+                                                            rear_point[1]), 
+                                                hdg=hdg, speed=speed)
+                    collision = False
+                    for agent in self.agents:
+                        if is_collision(traffic_agent, agent):
+                            collision = True
+                            break
+                    if not collision:
+                        traffic_agent.current_road_index = road.road_id
+                        traffic_agent.current_lane_index = lane.lane_id
+                        self.agents.append(traffic_agent) 
                 
 
     def extract_lanes_in_range(self, roads, current_pos):
@@ -193,11 +197,7 @@ class SceneSimulator:
                 v1: float,
                 v2: float,
                 v0: float,
-                s0: float = 2.0,
-                T: float = 1.5,
-                a_max: float = 1.0,
-                b: float = 1.5,
-                delta: float = 4.0) -> float:
+                T: float = 1.5) -> float:
         """
         基于 IDM 的自适应巡航加速度计算。
         delta_s: 与前车净距 (m)
@@ -206,30 +206,24 @@ class SceneSimulator:
         v0: 期望车速上限 v_max (m/s)
         返回: 加速度 a (m/s^2)
         """
-        # 1) 期望安全间距 s* (动态头距)
-        s_star = s0 + v1 * T + (v1 * (v1 - v2)) / (2 * math.sqrt(a_max * b))
-        
-        # 2) 自由道路项与交互项
-        free_term = 1.0 - (v1 / v0) ** delta
-        interaction_term = (s_star / delta_s) ** 2 if delta_s > 0 else float('inf')
-        
-        # 3) IDM 加速度
-        a = a_max * (free_term - interaction_term)
-        
-        # 4) 防止过度制动/加速，并确保不超过限速 v0
-        #    若 v1 > v0，优先刹车
-        if v1 >= v0:
-            a = min(a, -b)   # 轻松减速
-        #    限制最大加速度
-        a = max(min(a, a_max), -b)
+        safe_des = v1**2/2
+        a = 2*((delta_s-safe_des)/(T**2)+(0.0*v2-v1)/T)
+        print(f"a={a}")
+        if v1>v0:
+            a1 = self.compute_acceleration(v0,v1)
+            a = min(a,a1)
         return a
     def compute_acceleration(self, target_speed: float, current_speed: float) -> float:
         return (target_speed**2 - current_speed**2)/(2)
-    def compute_stop_acceleration(self, current_speed: float, remain_distance: float) -> float:
-        return (0.0 - current_speed**2)/(2*remain_distance+1e-3)
+    def compute_stop_acceleration(self, target_speed:float, current_speed: float, remain_distance: float) -> float:
+        remain_distance = max(remain_distance,1e-3)
+        if current_speed**2<2*remain_distance and remain_distance>0.1:
+            return self.compute_acceleration(self.cruising_speed,current_speed)
+        return (target_speed**2 - current_speed**2)/(2*remain_distance)
     
     def pure_pursuit_curvature(self,
         position: Point2D,
+        heading: float,
         path: List[Point2D],
         lookahead: float
     ) -> float:
@@ -263,14 +257,6 @@ class SceneSimulator:
         if target is None:
             target = path[-1]
 
-        # 3) 估计车辆航向：取最近点与其下一个点的连线方向
-        if idx0 < len(path) - 1:
-            next_pt = path[idx0 + 1]
-        else:
-            # 如果最近点已经是最后一个，则退而取前一个
-            next_pt = path[idx0 - 1]
-        heading = math.atan2(next_pt.y - path[idx0].y,
-                            next_pt.x - path[idx0].x)
 
         # 4) 计算车头指向“预瞄点”的角度 alpha
         dx = target.x - position.x
@@ -309,89 +295,141 @@ class SceneSimulator:
         return light
 
     def update_states(self)->None:
+        from ..utils.color_print import RED,RESET,GREEN,YELLOW,BLUE,CYAN,MAGENTA
         lookahead = 5.0  # 或者从配置获取
         clear_output(wait=True)
         self.view.clear_temp_paths()
-        
-        for current_agent in self.agents:
+        self.need_stop=False
+        for current_agent in [self.ego_vehicle]+self.agents:
             road_id = current_agent.current_road_index
             lane_id = current_agent.current_lane_index
+            print(f"Agent {current_agent.id},R{road_id},L{lane_id}:")
             current_lane = self.get_lane(road_id, lane_id)
             current_s,current_b,current_out,current_proj_point,current_hdg = current_lane.projection(current_agent.pos)
             remain_s = current_lane.length - current_s
+            if current_agent.road_map:
+                hold_lane = current_agent.road_map[-1]
+                pd_l = -current_s+sum(current_agent.plan_haul)
+            else:
+                hold_lane = current_lane
+                current_agent.road_map.append(current_lane)
+                current_agent.ref_line.append(current_lane.get_ref_line())
+                pd_l = remain_s
+            while pd_l<30:
+                hold_lane_id = random.randrange(len(hold_lane.successor))
+                hold_lane = self.get_lane(hold_lane.successor[hold_lane_id][0],hold_lane.successor[hold_lane_id][1])
+                current_agent.road_map.append(hold_lane)
+                current_agent.ref_line.append(hold_lane.get_ref_line())
+                current_agent.plan_haul.append(hold_lane.length)
+                pd_l+=hold_lane.length
+                
+
             current_v = current_agent.speed
             closest_agent = None
             min_distance = float('inf')
             if current_out:
-                print(f"Agent {current_agent.id} 偏离 R:{road_id},L:{lane_id}")
+                print(f"\t{RED}偏离 R:{road_id},L:{lane_id}{RESET}")
             else:
-                print(f"Agent {current_agent.id} s:{current_s} 横向误差:{current_b}")
+                print(f"\ts:{current_s:.3f}, 剩余{remain_s:.3f}m, 横向误差:{current_b:.3f}")
             #更新前方最近智能体
             for agent in [self.ego_vehicle]+self.agents:
                 if agent.id == current_agent.id:
                     continue
-                if road_id == current_agent.current_road_index and lane_id == current_agent.current_lane_index:
-                    agent_s,_,agent_status,_,_ = current_lane.projection(agent.pos)
-                    if agent_s > current_s:
-                        delta_s = agent_s - current_s
-                        if delta_s < min_distance:
-                            min_distance = delta_s
-                            closest_agent = agent
-            if closest_agent is not None:
-                agent_v = closest_agent.speed
-                acc = self.acc_idm(delta_s, current_v, agent_v, v0=current_agent.speed_limit)
-                current_agent.step(a_cmd = acc,dt = self.step)
-            road = self.get_road(road_id)
-            acc_cmd = 0
+                pred_length = 0.0
+                for check_lane in current_agent.road_map:
+                    if (check_lane.belone_road.road_id == agent.current_road_index and check_lane.lane_id == agent.current_lane_index):
+                        agent_s,_,agent_status,_,_ = check_lane.projection(agent.pos)
+                        if agent_s > current_s:
+                            delta_s = pred_length + agent_s - current_s
+                            if delta_s < min_distance:
+                                min_distance = delta_s
+                                closest_agent = agent
+                    pred_length+=check_lane.length
+                    if pred_length-current_s>30:
+                        break
+                    
+            acc_cmd = current_agent.a_max
+
             curvature_cmd = 0
+            #纵向控制
+            road = self.get_road(road_id)
+
+            if closest_agent is not None:
+                if min_distance<30:
+                    self.need_stop=True
+                if min_distance>10:
+                    print(f"\t{YELLOW}最近智能体:{closest_agent.id},在前方{min_distance:.3f}m{RESET}")
+                else:
+                    print(f"\t{RED}最近智能体:{closest_agent.id},在前方{min_distance:.3f}m{RESET}")
+                agent_v = closest_agent.speed
+                acc_follow = self.acc_idm(delta_s=delta_s, v1=current_v, v2=agent_v, v0=self.crossing_speed if road.junction != "-1" else self.cruising_speed)
+                print(f"\t跟车acc:{acc_follow}")
+                acc_cmd = min(acc_cmd, acc_follow)
             
-            #纵向控制，路口状况判断
+            
+            
             if road.junction != "-1":
-                acc_cmd = self.compute_acceleration(3.0, current_v)
+                print(f"\t当前在路口,前方道路type:{road.successor[0]}")
+                acc_in_junc = self.compute_acceleration(self.crossing_speed, current_v)
+                print(f"\t路口acc:{acc_in_junc}")
+                acc_cmd = min(acc_cmd, acc_in_junc)
                 current_agent.choise_lock = None
             else:
-                if current_lane.successor:
-                    if road.successor[0] == "road":
-                        acc_cmd = self.compute_acceleration(3.0, current_v)
-                    else:
-                        if current_agent.choise_lock == None:
-                            current_agent.choise_lock = random.randrange(len(current_lane.successor))
-                        color = self.get_lane_traffic_light(current_lane.successor[current_agent.choise_lock][0], current_lane.successor[current_agent.choise_lock][1])
-                        if color == 'green' or color == 'grey':
-                            acc_cmd = self.compute_acceleration(3.0, current_v)
+                pred_length = 0.0
+                for check_lane in current_agent.road_map:
+                    if check_lane.belone_road.junction!='-1':
+                        color = self.get_lane_traffic_light(check_lane.belone_road.road_id, check_lane.lane_id)
+                        lane_remain_s = pred_length-current_s
+                        if (color == 'green'):
+                            print(f"\t前方{lane_remain_s:.3f}m路口{GREEN}{color}{RESET}灯")
+                        elif (color=='red'):
+                            print(f"\t前方{lane_remain_s:.3f}m路口{RED}{color}{RESET}灯")
+
+                        if color == 'green':
+                            acc_green = self.compute_stop_acceleration(target_speed=self.crossing_speed, current_speed=current_v, remain_distance=lane_remain_s-current_agent.length_front-0.5)
+                            print(f"\t灯前acc{acc_green}")
+                            acc_cmd = min(acc_cmd, acc_green)
+                        elif color == 'grey':
+                            acc_in_road = self.compute_acceleration(self.cruising_speed, current_v)
+                            print(f"\t道路acc:{acc_in_road}")
+                            acc_cmd = min(acc_cmd, acc_in_road)
                         else:
-                            delta_s = current_lane.length - current_s
-                            acc_cmd = self.compute_stop_acceleration(current_v, delta_s)
+                            acc_red =  self.compute_stop_acceleration(target_speed=0.0, current_speed=current_v, remain_distance=lane_remain_s-current_agent.length_front-0.5)
+                            print(f"\t红灯acc:{acc_red}")
+                            acc_cmd = min(acc_cmd,acc_red)
+                    pred_length+=check_lane.length
+                    if pred_length-current_s>30:
+                        acc_in_road1 = self.compute_acceleration(self.cruising_speed, current_v)
+                        print(f"\t道路acc{acc_in_road1}")
+                        acc_cmd = min(acc_cmd, acc_in_road1)
+                        break
                 else:
-                    acc_cmd = -1
+                    print("前方无路")
+                    acc_cmd = min(acc_cmd, current_agent.a_min)
             
-            next_lane_index = current_agent.choise_lock if current_agent.choise_lock != None else 0
+            acc_cmd = min(max(acc_cmd,current_agent.a_min),current_agent.a_max)
             
             #横向控制
             # 1) 得到当前车道的参考线
-            ref_line = current_lane.get_ref_line()  # List[Point2D]
-
-            # 2) 如果剩余 < lookahead，拼接下一车道的参考线
-            if remain_s < lookahead+10 and current_lane.successor:
-                # 取第一个后继车道
-                next_road_id, next_lane_id = current_lane.successor[next_lane_index]
-                next_lane = self.get_lane(next_road_id, next_lane_id)
-                next_ref = next_lane.get_ref_line()
-                # 只拼接 next_ref 的前 lookahead 段
-                ref_line = ref_line + next_ref
-            self.view.add_temp_path(ref_line)
+            ref_line = [element for sub_list in current_agent.ref_line for element in sub_list]
+            # self.view.add_temp_path(ref_line)
             
             # 3) 调用纯追踪算法计算曲率
             curvature_cmd = self.pure_pursuit_curvature(
                 position=current_agent.pos,
+                heading=current_agent.hdg,
                 path=ref_line,
                 lookahead=lookahead
             )
+            print(f"\t v:{current_v:.3f}, acc_cmd:{acc_cmd:.3f}, cur_cmd:{curvature_cmd:.4f}")
+
             current_agent.step(a_cmd = acc_cmd, cur_cmd = curvature_cmd, dt = self.step)
 
             #更新当前道路和车道
             if remain_s < 0.1:
                 if current_lane.successor:
-                    current_agent.current_road_index = current_lane.successor[next_lane_index][0]
-                    current_agent.current_lane_index = current_lane.successor[next_lane_index][1]
-        
+                    current_agent.current_road_index = current_agent.road_map[1].belone_road.road_id
+                    current_agent.current_lane_index = current_agent.road_map[1].lane_id
+                    current_agent.road_map = current_agent.road_map[1:]
+                    current_agent.ref_line = current_agent.ref_line[1:]
+                    current_agent.plan_haul = current_agent.plan_haul[1:]

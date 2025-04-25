@@ -40,7 +40,9 @@ class TrafficAgent:
         self.agent_type = agent_type
         self.current_road_index = str(current_road_index)
         self.current_lane_index = str(current_lane_index)
-        self.choise_lock = None
+        self.road_map = []                   # 记录一连串lane路线规划
+        self.ref_line = []                   # 拼接路线规划车道中心线
+        self.plan_haul = []                  # 记录路线规划路段距离
     def step(self, a_cmd: float, dt: float, cur_cmd: float = 0.0) -> None:
         """
         仿真步进。

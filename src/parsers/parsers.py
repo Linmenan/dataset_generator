@@ -414,13 +414,15 @@ class MapParser:
                         headings.append(local_hdg)
                 if travel_dir=='backward':
                     w_current_ = w_current[::-1]
+                    headings_ = headings[::-1]
                     s_arr_ = np.cumsum(np.diff(s_arr,prepend=0)[::-1])
                     sampled_points_ = sampled_points[::-1]
                 else:
                     w_current_ = w_current
+                    headings_ = headings
                     s_arr_ = s_arr
                     sampled_points_ = sampled_points
-                lane_obj = Lane(lane_id, "left", sampled_points_, headings=headings, widths=w_current_, hauls=s_arr_, in_range=False, travel_dir=travel_dir, lane_change=lane_change)
+                lane_obj = Lane(road_obj, lane_id, "left", sampled_points_, headings=headings_, widths=w_current_, hauls=s_arr_, in_range=False, travel_dir=travel_dir, lane_change=lane_change)
                 # 记录从 lane 自身获取的链接信息（可能只有 lane id，没有 Road 信息）
                 if travel_dir=='backward':
                     if lane_pred is not None:
@@ -543,13 +545,15 @@ class MapParser:
                         headings.append(local_hdg)
                 if travel_dir=='backward':
                     w_current_ = w_current[::-1]
+                    headings_ = headings[::-1]
                     s_arr_ = np.cumsum(np.diff(s_arr,prepend=0)[::-1])
                     sampled_points_ = sampled_points[::-1]
                 else:
                     w_current_ = w_current
+                    headings_ = headings
                     s_arr_ = s_arr
                     sampled_points_ = sampled_points
-                lane_obj = Lane(lane_id, "right", sampled_points_, headings=headings, widths=w_current_, hauls=s_arr_, in_range=False, travel_dir=travel_dir, lane_change=lane_change)
+                lane_obj = Lane(road_obj, lane_id, "right", sampled_points_, headings=headings_, widths=w_current_, hauls=s_arr_, in_range=False, travel_dir=travel_dir, lane_change=lane_change)
                 if travel_dir=='backward':
                     if lane_pred is not None:
                         lane_obj.successor = lane_pred
