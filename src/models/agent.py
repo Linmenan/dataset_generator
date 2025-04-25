@@ -40,6 +40,7 @@ class TrafficAgent:
         self.agent_type = agent_type
         self.current_road_index = str(current_road_index)
         self.current_lane_index = str(current_lane_index)
+        self.choise_lock = None
     def step(self, a_cmd: float, dt: float, cur_cmd: float = 0.0) -> None:
         """
         仿真步进。

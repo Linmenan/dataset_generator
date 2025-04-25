@@ -2,17 +2,19 @@
 Author: linmenan 314378011@qq.com
 Date: 2025-04-21 10:48:05
 LastEditors: linmenan 314378011@qq.com
-LastEditTime: 2025-04-23 17:48:20
+LastEditTime: 2025-04-25 17:14:03
 FilePath: /dataset_generator/src/visualization/visualization.py
 Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
 '''
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtGui, QtCore, QtWidgets
+from pyqtgraph import TextItem
+
 import numpy as np
 import math
 from typing import List
 from ..models.agent import TrafficAgent
-
+from ..models.map_elements import Point2D
 import networkx as nx
 import numpy as np
 import plotly.graph_objects as go
@@ -41,21 +43,93 @@ def generate_circle_points(center, radius, num_points=50):
     y_circle = (cy + radius * np.sin(theta)).tolist()
     return x_circle, y_circle
 
-class SimView(pg.GraphicsLayoutWidget):
+class SimView(QtWidgets.QWidget):
     """
     PyQtGraph 窗口，用于实时渲染车道线和智能体。
     创建时先绘制所有车道；每次 update() 只更新颜色和多边形顶点，
     完全在 GPU/Qt 侧渲染，性能大幅提升。
     """
-    def __init__(self, sim):
-        super().__init__(parent=None, show=False, size=(1200, 800), title="Real-Time Traffic")
+    def __init__(self, sim, size=(1200, 800), title="Real-Time Traffic"):
+        super().__init__(parent=None)
         self.sim = sim
-        self.plot = self.addPlot()
+        
+        self.setWindowTitle(title)     # 标题栏文字
+        self.resize(*size)             # 默认宽高
+        # ---------- 1) 搭积木 ----------
+        vbox = QtWidgets.QVBoxLayout(self)
+        vbox.setContentsMargins(0, 0, 0, 0)
+
+        # 1.1 绘图区域
+        self.canvas = pg.GraphicsLayoutWidget()
+        vbox.addWidget(self.canvas, stretch=1)
+
+        self.plot = self.canvas.addPlot(row=0, col=0)
         self.plot.setAspectLocked(True)
+
+        # 1.2 信息栏
+        self.info_label = QtWidgets.QLabel('')
+        self.info_label.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop)
+        self.info_label.setMinimumHeight(32)           # 给点高度
+        self.info_label.setStyleSheet(
+            "background: rgba(255,255,255,180);"
+            "font: 12pt 'Arial';"
+            "padding: 4px;"
+        )
+        vbox.addWidget(self.info_label, stretch=0)
+
         self.lane_curves = {}    # {(road_id, lane_id): PlotDataItem}
         self.agent_items = {}    # {agent.id: QGraphicsPolygonItem}
+        self.agent_arrows  = {}   # {agent.id: ArrowItem}
+        
         self._init_lanes()
 
+        # 新增：临时路径存储
+        self._temp_paths = {}      # {name or id: PlotDataItem}
+        
+
+
+        
+    def add_temp_path(
+        self,
+        path_points: List[Point2D],
+        pen: pg.mkPen = None,
+        name: str = None
+    ) -> pg.PlotDataItem:
+        """
+        在视图中绘制一条临时路径（折线）。
+        
+        参数：
+            path_points: 一串 (x, y) 点，用于绘制折线
+            pen:        一个 pyqtgraph.mkPen 对象，用于设置颜色、宽度等
+            name:       可选的标识符，用于后续移除，若为 None 则自动生成
+        返回：
+            对应的 PlotDataItem
+        """
+        # 生成默认 pen
+        if pen is None:
+            pen = pg.mkPen(color='blue', width=2)  # 红色，宽度 2
+
+        # 从 Point2D 列表中提取 x, y
+        xs = [pt.x for pt in path_points]
+        ys = [pt.y for pt in path_points]
+
+
+        # 绘制
+        item = self.plot.plot(xs, ys, pen=pen)
+        
+        # 存储
+        key = name or id(item)
+        self._temp_paths[key] = item
+        return item
+
+    def clear_temp_paths(self) -> None:
+        """
+        移除所有通过 add_temp_path 绘制的临时路径。
+        """
+        for key, item in self._temp_paths.items():
+            self.plot.removeItem(item)
+        self._temp_paths.clear()
+    
     def _init_lanes(self):
         """首次绘制所有车道中心线为灰色虚线。"""
         for road in self.sim.map_parser.roads.values():
@@ -88,6 +162,7 @@ class SimView(pg.GraphicsLayoutWidget):
                     pen=pg.mkPen('grey', width=1, style=QtCore.Qt.SolidLine)
                 )
                 self.lane_curves[(road.road_id, lane.lane_id, 'r')] = curve_r
+    
 
     def update(self):
         """每步仿真后调用：更新车道颜色 & 智能体安全盒。"""
@@ -103,22 +178,55 @@ class SimView(pg.GraphicsLayoutWidget):
                 # 左/右边界
                 curve.setPen(pg.mkPen('grey', width=1, style=QtCore.Qt.SolidLine))
 
-        # 2) 智能体多边形
+        # ---- 2) 更新智能体多边形 & 箭头 ----
         for ag in [self.sim.ego_vehicle] + self.sim.agents:
-            
+            # 2.1 多边形安全盒
             pts = box_points(ag)
+            poly = QtGui.QPolygonF([QtCore.QPointF(x, y) for x, y in pts])
 
-            poly = QtGui.QPolygonF([QtCore.QPointF(x,y) for x,y in pts])
             item = self.agent_items.get(ag.id)
             if item is None:
                 item = QtWidgets.QGraphicsPolygonItem(poly)
                 pen   = pg.mkPen('#fc5f00' if ag.id=='0' else 'royalblue', width=2)
                 brush = pg.mkBrush(255, 0, 0, 50) if ag.id=='0' else pg.mkBrush(65,105,225,50)
-                item.setPen(pen); item.setBrush(brush)
+                item.setPen(pen)
+                item.setBrush(brush)
                 self.plot.addItem(item)
                 self.agent_items[ag.id] = item
             else:
                 item.setPolygon(poly)
+
+            # 2.2 朝向箭头
+            center_pos = (ag.pos.x+ag.length_front*np.cos(ag.hdg), ag.pos.y+ag.length_front*np.sin(ag.hdg))
+            angle_deg = 180.0-math.degrees(ag.hdg)  # PyQtGraph 默认以水平向右为 0°
+            arrow = self.agent_arrows.get(ag.id)
+            if arrow is None:
+                # 新建箭头
+                pen_arrow = pg.mkPen('#fc5f00' if ag.id=='0' else 'royalblue', width=2)
+                brush_arrow = pg.mkBrush('#fc5f00' if ag.id=='0' else 'royalblue')
+                arrow = pg.ArrowItem(
+                    pos=center_pos,
+                    angle=angle_deg,
+                    pen=pen_arrow,
+                    brush=brush_arrow,
+                    headLen=10
+                )
+                self.plot.addItem(arrow)
+                self.agent_arrows[ag.id] = arrow
+            else:
+                # 更新位置和角度
+                arrow.setPos(center_pos[0], center_pos[1])
+                arrow.setStyle(angle=angle_deg)
+
+        # ---- 3) 更新外部信息标签 ----
+        t = self.sim.sim_time
+        ego = self.sim.ego_vehicle.pos
+        if ego is not None and t is not None:
+            self.info_label.setText(
+                f"Time: {t:.2f}s    "
+                f"Ego: ({ego.x:.2f}, {ego.y:.2f})"
+            )
+
 
 
 

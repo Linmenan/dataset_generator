@@ -348,7 +348,7 @@ class MapParser:
                 
                 lane_pred = []
                 lane_succ = []
-                if road_pred[0]=='road':
+                if road_pred and road_pred[0]=='road':
                     # 读取 lane 的链接关系（若存在）
                     link_elem = lane.find('link')
                     if link_elem is not None:
@@ -356,7 +356,7 @@ class MapParser:
                         if pred_elem is not None:
                             lane_pred.append((road_pred[1],pred_elem.get('id')))
                             # print(f"找到前续 {(road_pred[1],pred_elem.get('id'))}")
-                elif road_pred[0]=='junction':
+                elif road_pred and road_pred[0]=='junction':
                     junction = junction_dict.get(road_pred[1])
                     for conn in junction.findall('connection'):
                         if conn.get('incomingRoad')==road_obj.road_id:
@@ -367,7 +367,7 @@ class MapParser:
                                     break
               
                                     
-                if road_succ[0]=='road':
+                if road_succ and road_succ[0]=='road':
                     # 读取 lane 的链接关系（若存在）
                     link_elem = lane.find('link')
                     if link_elem is not None:
@@ -375,7 +375,7 @@ class MapParser:
                         if succ_elem is not None:
                             lane_succ.append((road_succ[1],succ_elem.get('id')))
                             # print(f"找到后继 {(road_succ[1],succ_elem.get('id'))}")
-                elif road_succ[0]=='junction':
+                elif road_succ and road_succ[0]=='junction':
                     junction = junction_dict.get(road_succ[1])
                     for conn in junction.findall('connection'):
                         if conn.get('incomingRoad')==road_obj.road_id:
@@ -412,8 +412,15 @@ class MapParser:
                         headings.append(local_hdg + np.pi)
                     else:
                         headings.append(local_hdg)
-                lane_obj = Lane(lane_id, "left", sampled_points, headings=headings, in_range=False, travel_dir=travel_dir, lane_change=lane_change)
-                
+                if travel_dir=='backward':
+                    w_current_ = w_current[::-1]
+                    s_arr_ = np.cumsum(np.diff(s_arr,prepend=0)[::-1])
+                    sampled_points_ = sampled_points[::-1]
+                else:
+                    w_current_ = w_current
+                    s_arr_ = s_arr
+                    sampled_points_ = sampled_points
+                lane_obj = Lane(lane_id, "left", sampled_points_, headings=headings, widths=w_current_, hauls=s_arr_, in_range=False, travel_dir=travel_dir, lane_change=lane_change)
                 # 记录从 lane 自身获取的链接信息（可能只有 lane id，没有 Road 信息）
                 if travel_dir=='backward':
                     if lane_pred is not None:
@@ -470,7 +477,7 @@ class MapParser:
                 
                 lane_pred = []
                 lane_succ = []
-                if road_pred[0]=='road':
+                if road_pred and road_pred[0]=='road':
                     # 读取 lane 的链接关系（若存在）
                     link_elem = lane.find('link')
                     if link_elem is not None:
@@ -478,7 +485,7 @@ class MapParser:
                         if pred_elem is not None:
                             lane_pred.append((road_pred[1],pred_elem.get('id')))
                             # print(f"找到前续 {(road_pred[1],pred_elem.get('id'))}")
-                elif road_pred[0]=='junction':
+                elif road_pred and road_pred[0]=='junction':
                     junction = junction_dict.get(road_pred[1])
                     for conn in junction.findall('connection'):
                         if conn.get('incomingRoad')==road_obj.road_id:
@@ -489,7 +496,7 @@ class MapParser:
                                     break
 
 
-                if road_succ[0]=='road':
+                if road_succ and road_succ[0]=='road':
                     # 读取 lane 的链接关系（若存在）
                     link_elem = lane.find('link')
                     if link_elem is not None:
@@ -497,7 +504,7 @@ class MapParser:
                         if succ_elem is not None:
                             lane_succ.append((road_succ[1],succ_elem.get('id')))
                             # print(f"找到后继 {(road_succ[1],succ_elem.get('id'))}")
-                elif road_succ[0]=='junction':
+                elif road_succ and road_succ[0]=='junction':
                     junction = junction_dict.get(road_succ[1])
                     for conn in junction.findall('connection'):
                         if conn.get('incomingRoad')==road_obj.road_id:
@@ -534,7 +541,15 @@ class MapParser:
                         headings.append(local_hdg + np.pi)
                     else:
                         headings.append(local_hdg)
-                lane_obj = Lane(lane_id, "right", sampled_points, headings=headings, in_range=False, travel_dir=travel_dir, lane_change=lane_change)
+                if travel_dir=='backward':
+                    w_current_ = w_current[::-1]
+                    s_arr_ = np.cumsum(np.diff(s_arr,prepend=0)[::-1])
+                    sampled_points_ = sampled_points[::-1]
+                else:
+                    w_current_ = w_current
+                    s_arr_ = s_arr
+                    sampled_points_ = sampled_points
+                lane_obj = Lane(lane_id, "right", sampled_points_, headings=headings, widths=w_current_, hauls=s_arr_, in_range=False, travel_dir=travel_dir, lane_change=lane_change)
                 if travel_dir=='backward':
                     if lane_pred is not None:
                         lane_obj.successor = lane_pred

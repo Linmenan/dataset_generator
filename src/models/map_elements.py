@@ -48,18 +48,21 @@ class Object:
 
 # 定义 Lane 类
 class Lane:
-    def __init__(self, lane_id, lane_type, sampled_points, headings, travel_dir, lane_change, in_range=False):
+    def __init__(self, lane_id, lane_type, sampled_points, headings, widths, hauls, travel_dir, lane_change, in_range=False):
         self.lane_id = str(lane_id)      # 车道编号
-        self.lane_type = lane_type       # "left" 或 "right"
-        self.sampled_points = sampled_points  # [[(),(),()],[(),(),()]]采样点列表，用于绘制车道中心线、左边界、右边界线
+        self.lane_type = lane_type       # "left" 或 "right"位于道路的哪一侧
+        self.sampled_points = sampled_points  # [[(p1),(lp1),(rp1)],...,[(pn),(lpn),(rpn)]]采样点列表，用于绘制车道中心线、左边界、右边界线
         self.travel_dir = str(travel_dir) # 行驶方向包含 undirected 、 backward 、 forward 三种   
         self.lane_change = str(lane_change) # 变道选项包含 none 、 both 、 increase 、 decrease 四种   
-        self.headings = headings  # 采样点列表，用于绘制车道中心线
+        self.headings = headings  # 中心线行驶朝向，弧度制
+        self.widths = widths  # 车道采样宽度
+        self.hauls = hauls  # 采样点里程
         self.in_range = in_range         # 默认 False
         self.predecessor = []  # [(道路ID，轨道ID)]
         self.successor = []    # [(道路ID，轨道ID)]
         self.midpoint = (0, 0)  # 稍后计算
-        self.length = self.calculate_lane_length()
+        self.length = hauls[-1]  # 车道长度
+
     def compute_midpoint(self)-> None: # 用于计算拓扑图中车道节点位置
         pts = []
         if self.sampled_points:
@@ -68,58 +71,78 @@ class Lane:
             self.midpoint = tuple(np.mean(np.array(pts), axis=0))
         else:
             self.midpoint = (0, 0)
-    def calculate_lane_length(self)->float:
-        """
-        计算车道长度
-        """
-        if not self.sampled_points or len(self.sampled_points) < 2:
-            return 0.0
-        centers: List[Tuple[float, float]] = [c[0] for c in self.sampled_points]
-        centers_np = np.asarray(centers)        # (N,2)
-        seg_vecs = centers_np[1:] - centers_np[:-1]          # (N-1, 2)
-        seg_lens = np.linalg.norm(seg_vecs, axis=1)          # 各段长度
-        lane_length = np.sum(seg_lens)                        # 总长度
-        return lane_length
-    
-    def calculate_cumulate_s(self, pos: Point2D)->float:
+   
+    def projection(self, pos: Point2D)-> Tuple[float, float, bool, Point2D, float]:
         """
         根据输入点 `pos` 计算其沿车道中心线的累计里程 s (单位: 米)。
         - 如果行驶方向为  forward / undirected  → 返回正值
         - 如果行驶方向为  backward            → 返回负值
         若无法投影（点在中心线延长线之外），返回 None。
         """
-        if not self.sampled_points or len(self.sampled_points) < 2:
-            return 0                         # 无法计算
+        # 提取中心线点列表（Nx2 数组）
+        pts = [np.array(pt_list[0], dtype=float) for pt_list in self.sampled_points]
+        hauls = self.hauls
+        widths = self.widths
+        headings = self.headings
 
-        # ------- 1. 取中心线坐标 ------------
-        centers: List[Tuple[float, float]] = [c[0] for c in self.sampled_points]
-        centers_np = np.asarray(centers)        # (N,2)
+        # 在每个线段上找最近投影
+        best_dist2 = float("inf")
+        best_proj = Point2D(0, 0)
+        best_i = 0
+        best_t = 0.0
+        p = np.array([pos.x, pos.y], dtype=float)
 
-        # ------- 2. 逐段寻找投影 ------------
-        seg_vecs = centers_np[1:] - centers_np[:-1]          # (N-1, 2)
-        seg_lens = np.linalg.norm(seg_vecs, axis=1)          # 各段长度
-        lane_length = np.sum(seg_lens)                        # 总长度
-        seg_dirs = seg_vecs / seg_lens[:, None]              # 单位向量
+        for i in range(len(pts) - 1):
+            A = pts[i]
+            B = pts[i+1]
+            AB = B - A
+            norm2 = AB.dot(AB)
+            if norm2 == 0:
+                t = 0.0
+                proj = A
+            else:
+                t = np.dot(p - A, AB) / norm2
+                t = max(0.0, min(1.0, t))
+                proj = A + t * AB
 
-        p = np.array([pos.x, pos.y])
-        cum_len = 0.0                                       # 已累计 s
+            d2 = np.sum((p - proj) ** 2)
+            if d2 < best_dist2:
+                best_dist2 = d2
+                best_proj = proj
+                best_i = i
+                best_t = t
 
-        for i, (p0, dir_vec, L) in enumerate(zip(centers_np[:-1], seg_dirs, seg_lens)):
-            # 向量投影公式: proj_len = (p - p0)·dir
-            proj_len = np.dot(p - p0, dir_vec)
-            if 0.0 <= proj_len <= L:                       # 投影落在当前段
-                s = cum_len + proj_len
-                break
-            cum_len += L
-        else:                                              # for‑loop 未 break
-            s = lane_length                                    # 点不在中心线范围内
+        # 纵向里程 s
+        s = hauls[best_i] + best_t * (hauls[best_i+1] - hauls[best_i])
 
-        # ------- 3. 根据行驶方向给正负 ------
-        if self.travel_dir == "backward":
-            s = lane_length-s
-        # undirected / forward 保持正值
+        # 插值计算车道宽度
+        w0, w1 = widths[best_i], widths[best_i+1]
+        width_at_s = w0 + best_t * (w1 - w0)
 
-        return s
+        # 计算横向偏移 b
+        AB = pts[best_i+1] - pts[best_i]
+        length_AB = np.linalg.norm(AB)
+        if length_AB == 0:
+            normal = np.array([0.0, 0.0])
+        else:
+            # 左侧法向量
+            normal = np.array([-AB[1], AB[0]]) / length_AB
+        b = np.dot(p - best_proj, normal)
+
+        # 是否超出范围：纵向 [0, self.length] 或 |b| > width/2
+        is_out = (s < 0.0) or (s > self.length) or (abs(b) > width_at_s / 2.0)
+
+        # 投影点和航向插值
+        projected_point = Point2D(best_proj[0], best_proj[1])
+
+        # 航向插值时考虑角度环绕
+        h0 = headings[best_i]
+        h1 = headings[best_i+1]
+        delta = (h1 - h0 + np.pi) % (2*np.pi) - np.pi
+        heading_at = h0 + best_t * delta
+
+        return s, b, is_out, projected_point, heading_at
+
     def get_ref_line(self)-> List[Point2D]:
         """
         返回车道中心线的 Point2D 列表：
@@ -133,11 +156,6 @@ class Lane:
         # 1) 从 sampled_points 中提取中心点 (第一个元素)
         ref_pts = [Point2D(x, y) 
                    for (x, y), (_, _), (_, _) in self.sampled_points]
-
-        # 2) 根据行驶方向决定顺序
-        if self.travel_dir == "backward":
-            ref_pts.reverse()
-
         return ref_pts
 
         
