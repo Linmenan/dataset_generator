@@ -17,6 +17,7 @@ from pyqtgraph.Qt import QtWidgets
 from ..visualization.visualization import SimView
 from ..utils.data_recorder import DataRecorder
 from IPython.display import clear_output
+import logging
 
 class Mode(enum.Enum):   # enum 支持位运算 :contentReference[oaicite:0]{index=0}
     SYNC = "sync"
@@ -59,7 +60,7 @@ class SceneSimulator:
         # 创建并 show 视图
         self.view = SimView(self)
         self.view.show()
-        print("simulator init")
+        logging.debug("simulator init")
     # ----------- 公共查询接口 -----------
     @property
     def sim_time(self) -> float:
@@ -267,10 +268,10 @@ class SceneSimulator:
 
         return curvature
 
-    def get_lane_traffic_light(self, road_id: str, lane_id: str) -> str:
+    def get_lane_traffic_light(self, road_id: str, lane_id: str) -> Tuple[str,float]:
         road = self.get_road(road_id)
         lane = self.get_lane(road_id, lane_id)
-        light = 'grey'
+        light = ('grey',0.0)
         if road.junction != "-1":
                 if road.signals is not None:
                     for signal in road.signals:
@@ -284,8 +285,9 @@ class SceneSimulator:
                                         if control.signal_id == id:
                                             if controll.signal_controller is not None:
                                                 t = self.sim_time
-                                                status = controll.signal_controller.state(t=t)
-                                                light = status[id].value
+                                                status = controll.signal_controller.state_with_countdown(t=t)
+                                                now_ = status[id]
+                                                light = (now_[0].value,now_[1])
         return light
 
     def update_states(self)->None:
@@ -303,7 +305,7 @@ class SceneSimulator:
                 lane_map+="R"+lane.belone_road.road_id+"L"+lane.lane_id+"->"
             self.data_recorder.add_data(current_agent.id,'LaneMap',lane_map)
             
-            print(f"Agent {current_agent.id},R{road_id},L{lane_id}:")
+            logging.debug(f"Agent {current_agent.id},R{road_id},L{lane_id}:")
             current_lane = self.get_lane(road_id, lane_id)
             self.data_recorder.add_data(current_agent.id,'RoadId_LaneId_JuncId',road_id+"_"+lane_id+"_"+current_lane.belone_road.junction)
             current_s,current_b,current_out,current_proj_point,current_hdg = current_lane.projection(current_agent.pos)
@@ -333,9 +335,9 @@ class SceneSimulator:
             
             min_distance = float('inf')
             if current_out:
-                print(f"\t{RED}偏离 R:{road_id},L:{lane_id}{RESET}")
+                logging.debug(f"\t{RED}偏离 R:{road_id},L:{lane_id}{RESET}")
             else:
-                print(f"\ts:{current_s:.3f}, 剩余{remain_s:.3f}m, 横向误差:{current_b:.3f}")
+                logging.debug(f"\ts:{current_s:.3f}, 剩余{remain_s:.3f}m, 横向误差:{current_b:.3f}")
             #更新前方最近智能体
             for agent in [self.ego_vehicle]+self.agents:
                 if agent.id == current_agent.id:
@@ -369,12 +371,12 @@ class SceneSimulator:
                 if min_distance<30:
                     self.need_stop=True
                 if min_distance>10:
-                    print(f"\t{YELLOW}最近智能体:{closest_agent.id},在前方{min_distance:.3f}m{RESET}")
+                    logging.debug(f"\t{YELLOW}最近智能体:{closest_agent.id},在前方{min_distance:.3f}m{RESET}")
                 else:
-                    print(f"\t{RED}最近智能体:{closest_agent.id},在前方{min_distance:.3f}m{RESET}")
+                    logging.debug(f"\t{RED}最近智能体:{closest_agent.id},在前方{min_distance:.3f}m{RESET}")
                 agent_v = closest_agent.speed
                 acc_follow = self.acc_idm(delta_s=min_distance-current_agent.length_front-closest_agent.length_rear, v1=current_v, v2=agent_v, v0=self.crossing_speed if road.junction != "-1" else self.cruising_speed)
-                print(f"\t跟车acc:{acc_follow:.3f}")
+                logging.debug(f"\t跟车acc:{acc_follow:.3f}")
                 acc_cmd = min(acc_cmd, acc_follow)
                 self.data_recorder.add_data(current_agent.id,'ClosestAgentId',closest_agent.id)
                 self.data_recorder.add_data(current_agent.id,'ClosestAgentDis',min_distance)
@@ -384,55 +386,55 @@ class SceneSimulator:
             
             
             if road.junction != "-1":
-                print(f"\t当前在路口,前方道路type:{road.successor[0]}")
-                color = self.get_lane_traffic_light(current_lane.belone_road.road_id, current_lane.lane_id)
+                logging.debug(f"\t当前在路口,前方道路type:{road.successor[0]}")
+                (color,countdown) = self.get_lane_traffic_light(current_lane.belone_road.road_id, current_lane.lane_id)
                 if color=='grey':
                     acc_in_junc = self.compute_acceleration(self.cruising_speed, current_v)
                 else:
                     acc_in_junc = self.compute_acceleration(self.crossing_speed, current_v)
 
                 self.data_recorder.add_data(current_agent.id,'JunctionAcc',acc_in_junc)
-                print(f"\t路口acc:{acc_in_junc:.3f}")
+                logging.debug(f"\t路口acc:{acc_in_junc:.3f}")
                 acc_cmd = min(acc_cmd, acc_in_junc)
                 current_agent.choise_lock = None
             else:
                 pred_length = 0.0
                 for check_lane in current_agent.road_map:
                     if check_lane.belone_road.junction!='-1':
-                        color = self.get_lane_traffic_light(check_lane.belone_road.road_id, check_lane.lane_id)
+                        (color,countdown) = self.get_lane_traffic_light(check_lane.belone_road.road_id, check_lane.lane_id)
                         lane_remain_s = pred_length-current_s
                         self.data_recorder.add_data(current_agent.id,'Signal',color)
                         self.data_recorder.add_data(current_agent.id,'SignalRemainS',lane_remain_s-current_agent.length_front-0.5)
 
                         if (color == 'green'):
-                            print(f"\t前方{lane_remain_s:.3f}m路口{GREEN}{color}{RESET}灯")
+                            logging.debug(f"\t前方{lane_remain_s:.3f}m路口{GREEN}{color}{RESET}灯")
                         elif (color=='red'):
-                            print(f"\t前方{lane_remain_s:.3f}m路口{RED}{color}{RESET}灯")
+                            logging.debug(f"\t前方{lane_remain_s:.3f}m路口{RED}{color}{RESET}灯")
 
                         if color == 'green':
                             acc_green = self.compute_stop_acceleration(target_speed=self.crossing_speed, current_speed=current_v, remain_distance=lane_remain_s-current_agent.length_front-0.5)
                             self.data_recorder.add_data(current_agent.id,'JunctionAcc',acc_green)
-                            print(f"\t灯前acc{acc_green:.3f}")
+                            logging.debug(f"\t灯前acc{acc_green:.3f}")
                             acc_cmd = min(acc_cmd, acc_green)
                         elif color == 'grey':
                             acc_in_road = self.compute_acceleration(self.cruising_speed, current_v)
                             self.data_recorder.add_data(current_agent.id,'NoControlJunctionAcc',acc_in_road)
-                            print(f"\t道路acc:{acc_in_road:.3f}")
+                            logging.debug(f"\t道路acc:{acc_in_road:.3f}")
                             acc_cmd = min(acc_cmd, acc_in_road)
                         else:
                             acc_red =  self.compute_stop_acceleration(target_speed=0.0, current_speed=current_v, remain_distance=lane_remain_s-current_agent.length_front-0.5)
                             self.data_recorder.add_data(current_agent.id,'RedStopAcc',acc_red)
-                            print(f"\t红灯acc:{acc_red:.3f}")
+                            logging.debug(f"\t红灯acc:{acc_red:.3f}")
                             acc_cmd = min(acc_cmd,acc_red)
                     pred_length+=check_lane.length
                     if pred_length-current_s>30:
                         acc_in_road1 = self.compute_acceleration(self.cruising_speed, current_v)
                         self.data_recorder.add_data(current_agent.id,'RoadAcc',acc_in_road1)
-                        print(f"\t道路acc:{acc_in_road1:.3f}")
+                        logging.debug(f"\t道路acc:{acc_in_road1:.3f}")
                         acc_cmd = min(acc_cmd, acc_in_road1)
                         break
                 else:
-                    print("\t前方无路")
+                    logging.debug("\t前方无路")
                     acc_cmd = min(acc_cmd, current_agent.a_min)
             
             acc_cmd = min(max(acc_cmd,current_agent.a_min),current_agent.a_max)
@@ -449,7 +451,7 @@ class SceneSimulator:
                 path=ref_line,
                 lookahead=lookahead
             )
-            print(f"\t v:{current_v:.3f}, acc_cmd:{acc_cmd:.3f}, cur_cmd:{curvature_cmd:.4f}")
+            logging.debug(f"\t v:{current_v:.3f}, acc_cmd:{acc_cmd:.3f}, cur_cmd:{curvature_cmd:.4f}")
             self.data_recorder.add_data(current_agent.id,'AccCmd',acc_cmd)
             self.data_recorder.add_data(current_agent.id,'CurCmd',curvature_cmd)
 

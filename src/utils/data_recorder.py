@@ -1,7 +1,7 @@
 import os
 import pandas as pd
 from datetime import datetime
-
+import logging
 
 class DataRecorder:
     def __init__(self, save_path):
@@ -31,9 +31,9 @@ class DataRecorder:
                 for tab, lines in self.data.items():
                     df = pd.DataFrame(lines)
                     df.to_excel(writer, sheet_name=tab, index=False)
-            print(f"数据成功保存到 {file_path}")
+            logging.info(f"数据成功保存到 {file_path}")
         except Exception as e:
-            print(f"数据保存失败: {e}")
+            logging.error(f"数据保存失败: {e}")
         with pd.ExcelWriter(file_path) as writer:
             for tab, lines in self.data.items():
                 df = pd.DataFrame(lines)

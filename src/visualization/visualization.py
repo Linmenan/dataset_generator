@@ -2,7 +2,7 @@
 Author: linmenan 314378011@qq.com
 Date: 2025-04-21 10:48:05
 LastEditors: linmenan 314378011@qq.com
-LastEditTime: 2025-04-25 17:14:03
+LastEditTime: 2025-04-29 15:28:52
 FilePath: /dataset_generator/src/visualization/visualization.py
 Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
 '''
@@ -86,6 +86,9 @@ class SimView(QtWidgets.QWidget):
             "font-size": "10pt",
             "anchor": (0.5, 0.5),  # 文本锚点位于安全盒顶部中心
         }
+        self.lane_curves      = {}    # {(road_id, lane_id, 'c/l/r'): PlotDataItem}
+        self.lane_countdowns  = {}    # {(road_id, lane_id): TextItem}   # <— 新增
+
         self._init_lanes()
 
         # 新增：临时路径存储
@@ -137,6 +140,7 @@ class SimView(QtWidgets.QWidget):
     
     def _init_lanes(self):
         """首次绘制所有车道中心线为灰色虚线。"""
+        """首次绘制车道并在中线中点放一个空白 countdown 文本。"""
         for road in self.sim.map_parser.roads.values():
             for lane in road.lanes:
                 if not lane.sampled_points:
@@ -153,6 +157,16 @@ class SimView(QtWidgets.QWidget):
                     pen=pg.mkPen('grey', width=1, style=QtCore.Qt.DashLine)
                 )
                 self.lane_curves[(road.road_id, lane.lane_id, 'c')] = curve_c
+
+                # ----- Countdown 文字 -----
+                # mid_x, mid_y = centers[len(centers) // 2]
+                mid_x, mid_y = centers[0]
+                # txt = TextItem('', color='black', anchor=(0.5, -0.3))
+                txt = TextItem('', color='black', anchor=(0.0, 0.0))
+                txt.setFont(QtGui.QFont('Arial', 10, QtGui.QFont.Bold))
+                txt.setPos(mid_x, mid_y)
+                self.plot.addItem(txt)
+                self.lane_countdowns[(road.road_id, lane.lane_id)] = txt
 
                 # 左边界
                 curve_l = self.plot.plot(
@@ -172,16 +186,36 @@ class SimView(QtWidgets.QWidget):
     def update(self):
         """每步仿真后调用：更新车道颜色 & 智能体安全盒。"""
         # 1) 车道颜色
-        # 更新车道颜色（只改中线的颜色；边界仍灰色）
+        # ---------- 1)  车道信号 ----------
         for (rid, lid, kind), curve in self.lane_curves.items():
-            if kind == 'c':
-                road = self.sim.get_road(rid)
-                color = (self.sim.get_lane_traffic_light(rid, lid)
-                        if road.junction != "-1" else 'grey')
+            if kind != 'c':      # 边界
+                curve.setPen(pg.mkPen('grey', width=1))
+                continue
+
+            road = self.sim.get_road(rid)
+            if road.junction == "-1":      # 没有信号控制
+                curve.setPen(pg.mkPen('grey', width=1, style=QtCore.Qt.DashLine))
+                self.lane_countdowns[(rid, lid)].setText('')   # 清空数字
+                continue
+
+            # 有信号灯
+            color, countdown = self.sim.get_lane_traffic_light(rid, lid)
+            if color!='grey':
                 curve.setPen(pg.mkPen(color, width=2, style=QtCore.Qt.DashLine))
-            else:
-                # 左/右边界
-                curve.setPen(pg.mkPen('grey', width=1, style=QtCore.Qt.SolidLine))
+
+                # ---- 显示倒计时（向上取整）----
+                txt_item = self.lane_countdowns[(rid, lid)]
+                countdown_show = ''
+                countdown = math.ceil(countdown)
+                #设置红绿灯倒计时超出显示模式
+                if countdown>30:
+                    countdown_show = 'H'
+                else:
+                    countdown_show = str(countdown)
+                txt_item.setText('('+countdown_show+')')
+                # 文字颜色同信号色，更直观
+                txt_item.setColor(color)
+
 
         # ---- 2) 更新智能体多边形 & 箭头 ----
         for ag in [self.sim.ego_vehicle] + self.sim.agents:

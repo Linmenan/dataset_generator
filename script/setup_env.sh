@@ -1,0 +1,1 @@
+conda install jupyter numpy plotly pyqt=5 pyqtgraph networkx pandas openpyxl rtree
