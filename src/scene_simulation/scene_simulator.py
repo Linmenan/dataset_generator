@@ -298,8 +298,6 @@ class SceneSimulator:
             self.data_recorder.add_data(current_agent.id,'sim_time',self.sim_time)
             road_id = current_agent.current_road_index
             lane_id = current_agent.current_lane_index
-            self.data_recorder.add_data(current_agent.id,'RoadId',road_id)
-            self.data_recorder.add_data(current_agent.id,'LaneId',lane_id)
             lane_map = ""
             for lane in current_agent.road_map:
                 lane_map+="R"+lane.belone_road.road_id+"L"+lane.lane_id+"->"
@@ -307,6 +305,7 @@ class SceneSimulator:
             
             print(f"Agent {current_agent.id},R{road_id},L{lane_id}:")
             current_lane = self.get_lane(road_id, lane_id)
+            self.data_recorder.add_data(current_agent.id,'RoadId_LaneId_JuncId',road_id+"_"+lane_id+"_"+current_lane.belone_road.junction)
             current_s,current_b,current_out,current_proj_point,current_hdg = current_lane.projection(current_agent.pos)
             remain_s = current_lane.length - current_s
             if current_agent.road_map:
@@ -386,7 +385,12 @@ class SceneSimulator:
             
             if road.junction != "-1":
                 print(f"\t当前在路口,前方道路type:{road.successor[0]}")
-                acc_in_junc = self.compute_acceleration(self.crossing_speed, current_v)
+                color = self.get_lane_traffic_light(current_lane.belone_road.road_id, current_lane.lane_id)
+                if color=='grey':
+                    acc_in_junc = self.compute_acceleration(self.cruising_speed, current_v)
+                else:
+                    acc_in_junc = self.compute_acceleration(self.crossing_speed, current_v)
+
                 self.data_recorder.add_data(current_agent.id,'JunctionAcc',acc_in_junc)
                 print(f"\t路口acc:{acc_in_junc:.3f}")
                 acc_cmd = min(acc_cmd, acc_in_junc)
