@@ -1,7 +1,4 @@
+/.ipynb_checkpoints
 __pycache__
-
-
-
-
-
-
+*.dat
+*.idx

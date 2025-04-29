@@ -63,6 +63,18 @@ class Lane:
         self.successor = []    # [(道路ID，轨道ID)]
         self.midpoint = (0, 0)  # 稍后计算
         self.length = hauls[-1]  # 车道长度
+        self.coords = None
+
+    @property
+    def mbr(self):
+        ref_pts = [(x, y) for (x, y), (_, _), (_, _) in self.sampled_points]
+        self.coords = np.array(ref_pts)  # 使用NumPy存储坐标矩阵
+        return (
+            np.min(self.coords[:,0]),
+            np.max(self.coords[:,0]),
+            np.min(self.coords[:,1]),
+            np.max(self.coords[:,1])
+        )
 
     def compute_midpoint(self)-> None: # 用于计算拓扑图中车道节点位置
         pts = []

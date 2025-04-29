@@ -85,9 +85,7 @@ class SceneSimulator:
         self.update_states()
         if self.sim_frame%self.plot_step == 0:
             self.view.update()
-            
-   
-        
+                 
     # ----------- 主循环 (异步) -----------
     async def _run_async(self):
         self._start_wall = time.perf_counter()
@@ -113,7 +111,6 @@ class SceneSimulator:
             # self._loop = asyncio.new_event_loop()          # :contentReference[oaicite:4]{index=4}
             # asyncio.run_coroutine_threadsafe(
             #     self._run_async(), self._loop)
-
 
     def stop(self):
         self._running = False
@@ -170,7 +167,6 @@ class SceneSimulator:
                         traffic_agent.current_lane_index = lane.lane_id
                         self.agents.append(traffic_agent) 
                 
-
     def extract_lanes_in_range(self, roads, current_pos):
         cx, cy = current_pos
         for road in roads.values():
@@ -224,12 +220,7 @@ class SceneSimulator:
             return self.compute_acceleration(self.cruising_speed,current_speed)
         return (target_speed**2 - current_speed**2)/(2*remain_distance)
     
-    def pure_pursuit_curvature(self,
-        position: Point2D,
-        heading: float,
-        path: List[Point2D],
-        lookahead: float
-    ) -> float:
+    def pure_pursuit_curvature(self, position: Point2D, heading: float, path: List[Point2D], lookahead: float) -> float:
         """
         纯追踪法计算曲率 κ：
         κ = 2 * sin(alpha) / L_d
