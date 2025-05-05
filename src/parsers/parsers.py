@@ -11,6 +11,7 @@ class MapParser:
         self.yaml_path = yaml_path
         self.tree = ET.parse(file_path)
         self.roads = {}
+        self.lanes = {}
         self.traffic_lights = {} # traffic light id 与 Controlle对象构成的字典
         self.parse_oxdr_all()
         self.parse_traffic_lights()
@@ -21,6 +22,7 @@ class MapParser:
         对于 lane 链接，直接采用 xodr 文件中 lane 链接信息进行赋值，不作默认假设。
         """
         self.roads = {}
+        self.lanes = {}
         root = self.tree.getroot()
         
         # 遍历所有 road 元素，构造 Road 对象
@@ -570,6 +572,7 @@ class MapParser:
                 driving_lanes.append(lane_obj)
             cum_width_right = cum_width_right + w_current
 
+        self.lanes.update({road_obj.road_id+'_'+lane.lane_id:lane for lane in driving_lanes})
         road_obj.lanes = driving_lanes
 
 

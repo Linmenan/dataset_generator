@@ -1,16 +1,7 @@
-'''
-Author: linmenan 314378011@qq.com
-Date: 2025-04-21 10:48:05
-LastEditors: linmenan 314378011@qq.com
-LastEditTime: 2025-04-29 15:28:52
-FilePath: /dataset_generator/src/visualization/visualization.py
-Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
-'''
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtGui, QtCore, QtWidgets
 from pyqtgraph import TextItem
 
-import numpy as np
 import math
 from typing import List
 from ..models.agent import TrafficAgent
@@ -150,13 +141,36 @@ class SimView(QtWidgets.QWidget):
                 centers = np.array([c[0] for c in lane.sampled_points])
                 lefts   = np.array([c[1] for c in lane.sampled_points])
                 rights  = np.array([c[2] for c in lane.sampled_points])
+                
+                # 设置横向偏移量
+                offset = 0.1
 
+                # 计算法向量，通过切向角旋转 90 度得到
+                normal_vectors = np.array([[-np.sin(heading), np.cos(heading)] for heading in lane.headings])
+                # 对 lefts 和 rights 采样点进行偏移
+                offset_lefts = lefts - offset * normal_vectors
+                offset_rights = rights + offset * normal_vectors
+                
+                lane_change = lane.lane_change
+                
+                if lane_change == 'both':
+                    l_bound_line_style = QtCore.Qt.DashLine
+                    r_bound_line_style = QtCore.Qt.DashLine
+                elif lane_change == 'increase':
+                    l_bound_line_style = QtCore.Qt.DashLine
+                    r_bound_line_style = QtCore.Qt.SolidLine
+                elif lane_change == 'decrease':
+                    l_bound_line_style = QtCore.Qt.SolidLine
+                    r_bound_line_style = QtCore.Qt.DashLine
+                else:
+                    l_bound_line_style = QtCore.Qt.SolidLine
+                    r_bound_line_style = QtCore.Qt.SolidLine
                 # 中心线
                 curve_c = self.plot.plot(
                     centers[:,0], centers[:,1],
-                    pen=pg.mkPen('grey', width=1, style=QtCore.Qt.DashLine)
+                    pen=pg.mkPen('grey', width=0.1, style=QtCore.Qt.DashLine)
                 )
-                self.lane_curves[(road.road_id, lane.lane_id, 'c')] = curve_c
+                self.lane_curves[(road.road_id, lane.lane_id, 'c', lane_change)] = curve_c
 
                 # ----- Countdown 文字 -----
                 # mid_x, mid_y = centers[len(centers) // 2]
@@ -170,38 +184,39 @@ class SimView(QtWidgets.QWidget):
 
                 # 左边界
                 curve_l = self.plot.plot(
-                    lefts[:,0], lefts[:,1],
-                    pen=pg.mkPen('grey', width=1, style=QtCore.Qt.SolidLine)
+                    offset_lefts[:,0], offset_lefts[:,1],
+                    pen=pg.mkPen('grey', width=1, style=l_bound_line_style)
                 )
-                self.lane_curves[(road.road_id, lane.lane_id, 'l')] = curve_l
+                self.lane_curves[(road.road_id, lane.lane_id, 'l', lane_change)] = curve_l
 
                 # 右边界
                 curve_r = self.plot.plot(
-                    rights[:,0], rights[:,1],
-                    pen=pg.mkPen('grey', width=1, style=QtCore.Qt.SolidLine)
+                    offset_rights[:,0], offset_rights[:,1],
+                    pen=pg.mkPen('grey', width=1, style=r_bound_line_style)
                 )
-                self.lane_curves[(road.road_id, lane.lane_id, 'r')] = curve_r
+                self.lane_curves[(road.road_id, lane.lane_id, 'r', lane_change)] = curve_r
     
 
     def update(self):
         """每步仿真后调用：更新车道颜色 & 智能体安全盒。"""
         # 1) 车道颜色
         # ---------- 1)  车道信号 ----------
-        for (rid, lid, kind), curve in self.lane_curves.items():
-            if kind != 'c':      # 边界
-                curve.setPen(pg.mkPen('grey', width=1))
-                continue
+        for (rid, lid, kind, lane_change), curve in self.lane_curves.items():
+            
 
             road = self.sim.get_road(rid)
             if road.junction == "-1":      # 没有信号控制
-                curve.setPen(pg.mkPen('grey', width=1, style=QtCore.Qt.DashLine))
+                # curve.setPen(pg.mkPen('grey', width=1, style=QtCore.Qt.DashLine))
                 self.lane_countdowns[(rid, lid)].setText('')   # 清空数字
                 continue
 
             # 有信号灯
             color, countdown = self.sim.get_lane_traffic_light(rid, lid)
             if color!='grey':
-                curve.setPen(pg.mkPen(color, width=2, style=QtCore.Qt.DashLine))
+                if kind == 'c':      # 中心线
+                    # curve.setPen(pg.mkPen('grey', width=0.1)) 
+                    continue
+                curve.setPen(pg.mkPen(color))
 
                 # ---- 显示倒计时（向上取整）----
                 txt_item = self.lane_countdowns[(rid, lid)]
