@@ -1,5 +1,5 @@
 import numpy as np
-from typing import Tuple
+from typing import Tuple, List
 from .map_elements import Point2D
 
 class TrafficAgent:
@@ -23,7 +23,11 @@ class TrafficAgent:
         a_min: float = -5.0,                 # 最大减速度 (m/s²)
         agent_type: str = "car",             # "car" | "truck" | ...
         current_road_index: str = "",
-        current_lane_index: str = ""
+        current_lane_index: str = "", 
+        current_lane_unicode: int = -1,
+        nearerst_agent = None,
+        min_distance = float('inf'),
+        current_s = float('inf')
     ) -> None:
         self.id = str(id)
         self.pos = pos if pos is not None else Point2D(0, 0)
@@ -40,9 +44,13 @@ class TrafficAgent:
         self.agent_type = agent_type
         self.current_road_index = str(current_road_index)
         self.current_lane_index = str(current_lane_index)
+        self.current_lane_unicode = int(current_lane_unicode)
         self.road_map = []                   # 记录一连串lane路线规划
         self.ref_line = []                   # 拼接路线规划车道中心线
         self.plan_haul = []                  # 记录路线规划路段距离
+        self.nearerst_agent = nearerst_agent # 记录前方车辆
+        self.min_distance = min_distance
+        self.current_s = current_s
     def step(self, a_cmd: float, dt: float, cur_cmd: float = 0.0) -> None:
         """
         仿真步进。

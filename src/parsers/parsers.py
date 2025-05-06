@@ -594,7 +594,7 @@ class MapParser:
                 driving_lanes.append(lane_obj)
             cum_width_right = cum_width_right + w_current
 
-        self.lanes.update({road_obj.road_id+'_'+lane.lane_id:lane for lane in driving_lanes})
+        self.lanes.update({lane.unicode:lane for lane in driving_lanes})
         road_obj.lanes = driving_lanes
 
 
