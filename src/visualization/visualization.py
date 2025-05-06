@@ -71,13 +71,19 @@ class SimView(QtWidgets.QMainWindow):
         self.canvas = pg.GraphicsLayoutWidget()
         self.plot = self.canvas.addPlot()
         self.plot.setAspectLocked(True)
-        dock_plot = QtWidgets.QDockWidget("绘图区域", self)
-        dock_plot.setObjectName("绘图区域")
-        dock_plot.setWidget(self.canvas)
-        self.addDockWidget(QtCore.Qt.LeftDockWidgetArea, dock_plot)
-        view_menu.addAction(dock_plot.toggleViewAction())
-        dock_plot.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
-        dock_plot.setFeatures(QtWidgets.QDockWidget.DockWidgetMovable | QtWidgets.QDockWidget.DockWidgetFloatable)
+
+        self.dock_plot = QtWidgets.QDockWidget("绘图区域", self)
+        self.dock_plot.setObjectName("绘图区域")
+        self.dock_plot.setWidget(self.canvas)
+        self.addDockWidget(QtCore.Qt.LeftDockWidgetArea, self.dock_plot)
+        plot_action = self.dock_plot.toggleViewAction()  # 显式获取动作
+        view_menu.addAction(plot_action)
+        self.dock_plot.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+        self.dock_plot.setFeatures(
+            QtWidgets.QDockWidget.DockWidgetClosable | 
+            QtWidgets.QDockWidget.DockWidgetMovable | 
+            QtWidgets.QDockWidget.DockWidgetFloatable
+            )
 
         # ========================
         # 1.2 信息栏（右上）
@@ -90,29 +96,51 @@ class SimView(QtWidgets.QMainWindow):
             "font: 12pt 'Arial';"
             "padding: 4px;"
         )
-        dock_info = QtWidgets.QDockWidget("信息栏", self)
-        dock_info.setObjectName("信息栏")
-        dock_info.setWidget(self.info_label)
-        self.addDockWidget(QtCore.Qt.RightDockWidgetArea, dock_info)
-        view_menu.addAction(dock_info.toggleViewAction())
-        dock_info.setFeatures(QtWidgets.QDockWidget.DockWidgetMovable | QtWidgets.QDockWidget.DockWidgetFloatable)
+        self.dock_info = QtWidgets.QDockWidget("信息栏", self)
+        self.dock_info.setObjectName("信息栏")
+        self.dock_info.setWidget(self.info_label)
+        self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.dock_info)
+
+        info_action = self.dock_info.toggleViewAction()  # 显式获取动作
+        view_menu.addAction(info_action)
+        self.dock_info.setFeatures(
+            QtWidgets.QDockWidget.DockWidgetClosable | 
+            QtWidgets.QDockWidget.DockWidgetMovable | 
+            QtWidgets.QDockWidget.DockWidgetFloatable
+            )
 
         # ========================
         # 1.3 数据曲线（右下）
         # ========================
         self.data_plot_widget = pg.PlotWidget(title="仿真数据曲线")
         self.data_plot_widget.showGrid(x=True, y=True)
-        self.data_plot_widget.addLegend()
-        self.data_lines = {}
+        self.legend = self.data_plot_widget.addLegend(offset=(10, 10))
+        self.data_plot_widget.setLabel('left', 'Value')
+        self.data_plot_widget.setLabel('bottom', 'Time', 's')
 
-        dock_curve = QtWidgets.QDockWidget("数据曲线", self)
-        dock_curve.setObjectName("数据曲线")
-        dock_curve.setWidget(self.data_plot_widget)
-        self.addDockWidget(QtCore.Qt.RightDockWidgetArea, dock_curve)  # 暂时放右边
-        self.splitDockWidget(dock_info, dock_curve, QtCore.Qt.Vertical)  # 将其垂直放在 info 下方
-        view_menu.addAction(dock_curve.toggleViewAction())
-        dock_curve.setFeatures(QtWidgets.QDockWidget.DockWidgetMovable | QtWidgets.QDockWidget.DockWidgetFloatable)
-        self.resizeDocks([dock_plot, dock_info], [700, 300], QtCore.Qt.Horizontal)
+        self.data_lines = {}
+        self.color_idx = 0  # 颜色循环索引
+        self.style_idx = 0  # 线型循环索引
+
+        # 手动为图例标签添加鼠标点击事件处理
+        for item in self.legend.items:
+            label = item[1]
+            label.mousePressEvent = lambda e, l=label: self.handle_legend_click(l)
+
+        self.dock_curve = QtWidgets.QDockWidget("数据曲线", self)
+        self.dock_curve.setObjectName("数据曲线")
+        self.dock_curve.setWidget(self.data_plot_widget)
+        self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.dock_curve)  # 暂时放右边
+        
+        self.splitDockWidget(self.dock_info, self.dock_curve, QtCore.Qt.Vertical)  # 将其垂直放在 info 下方
+        curve_action = self.dock_curve.toggleViewAction()  # 显式获取动作
+        view_menu.addAction(curve_action)
+        self.dock_curve.setFeatures(
+            QtWidgets.QDockWidget.DockWidgetClosable | 
+            QtWidgets.QDockWidget.DockWidgetMovable | 
+            QtWidgets.QDockWidget.DockWidgetFloatable
+            )
+        self.resizeDocks([self.dock_plot, self.dock_info], [700, 300], QtCore.Qt.Horizontal)
         # ========================
         # 可视化内容
         # ========================
@@ -174,6 +202,30 @@ class SimView(QtWidgets.QMainWindow):
             self.plot.removeItem(item)
         self._temp_paths.clear()
     
+    def handle_legend_click(self, item, label):
+        """处理图例点击事件（显示/隐藏曲线）"""
+        # 从 label 对象获取曲线名称（假设 label 是曲线的 name）
+        curve_name = label.text()
+        self.toggle_curve_visibility(curve_name)
+
+    def toggle_curve_visibility(self, name: str):
+        """切换曲线可见性"""
+        if name not in self.data_lines:
+            return
+        
+        data = self.data_lines[name]
+        data["visible"] = not data["visible"]
+        
+        # 更新曲线透明度
+        opacity = 1.0 if data["visible"] else 0.2
+        pen = pg.mkPen(color=data["color"], width=2, style=data["style"], opacity=opacity)
+        data["curve"].setPen(pen)
+        
+        # 更新图例文字透明度
+        for item in self.legend.items:
+            if item[1].text == name:
+                item[1].setOpacity(opacity)
+
     def _init_lanes(self):
         for road in self.sim.map_parser.roads.values():
             for lane in road.lanes:
@@ -214,6 +266,12 @@ class SimView(QtWidgets.QMainWindow):
                 curve_r = self.plot.plot(offset_rights[:, 0], offset_rights[:, 1],
                                          pen=pg.mkPen('grey', width=1, style=r_style))
                 self.lane_curves[(road.road_id, lane.lane_id, 'r', lane_change)] = curve_r
+    
+    def add_data(self, dataname:str, x:float, y:float)->None:
+        if dataname not in self.data_lines:
+            self.data_lines[dataname] = {"visible": True, "x": [x], "y": [y]}
+        self.data_lines[dataname]["x"].append(x)
+        self.data_lines[dataname]["y"].append(y)
 
     def update(self):
         """每步仿真后调用：更新车道颜色 & 智能体安全盒。"""
@@ -293,27 +351,6 @@ class SimView(QtWidgets.QMainWindow):
         t = self.sim.sim_time
         ego = self.sim.ego_vehicle
 
-        # 更新速度曲线
-        if t is not None:
-            name = 'ego_speed'
-            if name not in self.data_lines:
-                color = random.choice(PAPER_COLORS)
-                style = random.choice(LINE_STYLES)
-                pen = pg.mkPen(color=color, width=2, style=style)
-                curve = self.data_plot_widget.plot(name="Ego Speed", pen=pen)
-                self.data_lines[name] = {"curve": curve, "x": [], "y": []}
-
-            line = self.data_lines[name]
-            line["x"].append(t)
-            line["y"].append(ego.speed)
-            line["curve"].setData(line["x"], line["y"])
-
-            # 设置横坐标显示最近10秒范围
-            window_width = 10.0  # 滚动窗口宽度（秒）
-            start_time = max(0.0, t - 10.0)
-            end_time = max(window_width, t)
-            self.data_plot_widget.setXRange(start_time, end_time, padding=0)
-
         # 更新信息栏
         self.info_label.setText(
             f"Time: {t:.2f}s\n"
@@ -321,7 +358,40 @@ class SimView(QtWidgets.QMainWindow):
             f"speed: {ego.speed:.1f} m/s"
         )
 
+        # 更新所有已注册数据曲线
+        for name in list(self.data_lines.keys()):  # 使用list避免字典修改异常
+            data = self.data_lines[name]
+            # 自动创建曲线（如果未初始化）
+            if "curve" not in data:
+                # 自动分配颜色和线型
+                color = PAPER_COLORS[self.color_idx % len(PAPER_COLORS)]
+                style = LINE_STYLES[self.style_idx % len(LINE_STYLES)]
+                self.color_idx += 1
+                self.style_idx += 1
 
+                # 创建曲线对象
+                pen = pg.mkPen(color=color, width=2, style=style)
+                curve = self.data_plot_widget.plot([], [], name=name, pen=pen)
+                data["curve"] = curve
+                data["color"] = color
+                data["style"] = style
+                data["visible"] = True  # 默认可见
+
+                # 绑定图例点击事件
+                legend_label = self.legend.getLabel(curve)
+                legend_label.mousePressEvent = lambda e, n=name: self.toggle_curve_visibility(n)
+
+            # 更新曲线数据
+            if data["visible"]:
+                data["curve"].setData(data["x"], data["y"])
+            else:
+                data["curve"].setData([], [])  # 隐藏时清空数据
+
+        # 设置时间轴范围（最近10秒）
+        window_width = 10.0
+        start_time = max(0.0, t - window_width) if t is not None else 0.0
+        end_time = max(window_width, t) if t is not None else window_width
+        self.data_plot_widget.setXRange(start_time, end_time, padding=0)
 
 
 def build_topology_graph_lanes(roads):

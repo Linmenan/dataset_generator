@@ -494,6 +494,9 @@ class SceneSimulator:
             self.data_recorder.add_data(current_agent.id,'CurCmd',curvature_cmd)
 
             current_agent.step(a_cmd = acc_cmd, cur_cmd = curvature_cmd, dt = self.step)
+            if current_agent.id=="0":
+                self.view.add_data("ego_velocity", self.sim_time, current_agent.speed)
+                self.view.add_data("ego_cte", self.sim_time, current_b)
 
             #更新当前道路和车道
             if remain_s < 0.1:
