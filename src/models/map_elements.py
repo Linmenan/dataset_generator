@@ -48,13 +48,16 @@ class Object:
 
 # 定义 Lane 类
 class Lane:
-    def __init__(self, belone_road, lane_id, lane_type, sampled_points, headings, widths, hauls, travel_dir, lane_change, in_range=False):
+    def __init__(self, belone_road, lane_id, unicode, lane_type, sampled_points, headings, widths, hauls, travel_dir, lane_change, line_style, line_color, in_range=False):
         self.lane_id = str(lane_id)      # 车道编号
+        self.unicode = int(unicode)      # 车道独一无二的编码
         self.belone_road = belone_road
         self.lane_type = lane_type       # "left" 或 "right"位于道路的哪一侧
         self.sampled_points = sampled_points  # [[(p1),(lp1),(rp1)],...,[(pn),(lpn),(rpn)]]采样点列表，用于绘制车道中心线、左边界、右边界线
-        self.travel_dir = str(travel_dir) # 行驶方向包含 undirected 、 backward 、 forward 三种   
-        self.lane_change = str(lane_change) # 变道选项包含 none 、 both 、 increase 、 decrease 四种   
+        self.travel_dir = str(travel_dir) # 行驶方向包含 undirected 、 backward 、 forward 三种
+        self.lane_change = str(lane_change) # 变道选项包含 none 、 both 、 increase 、 decrease 四种
+        self.line_style = str(line_style) # 线型，包含 solid 、 broken
+        self.line_color = str(line_color) # 颜色，包含 white 、 yellow
         self.headings = headings  # 中心线行驶朝向，弧度制
         self.widths = widths  # 车道采样宽度
         self.hauls = hauls  # 采样点里程

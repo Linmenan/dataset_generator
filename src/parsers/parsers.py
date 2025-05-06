@@ -12,6 +12,7 @@ class MapParser:
         self.tree = ET.parse(file_path)
         self.roads = {}
         self.lanes = {}
+        self.lane_code = int(0)
         self.traffic_lights = {} # traffic light id 与 Controlle对象构成的字典
         self.parse_oxdr_all()
         self.parse_traffic_lights()
@@ -23,6 +24,7 @@ class MapParser:
         """
         self.roads = {}
         self.lanes = {}
+        self.lane_code = int(0)
         root = self.tree.getroot()
         
         # 遍历所有 road 元素，构造 Road 对象
@@ -324,6 +326,8 @@ class MapParser:
                 user_data_elem = lane.find('userData')
                 travel_dir = ""
                 lane_change = ""
+                line_style = ""
+                line_color = ""
                 if user_data_elem is not None:
                     vector_lane_elem = user_data_elem.find('vectorLane')
                     if vector_lane_elem is not None:
@@ -331,6 +335,8 @@ class MapParser:
                 road_mark_elem = lane.find('roadMark')
                 if road_mark_elem is not None:
                     lane_change = road_mark_elem.get('laneChange','')
+                    line_style = road_mark_elem.get('type','')
+                    line_color = road_mark_elem.get('color','')
                     
                 if width_elem is not None:
                     sw_offset = float(width_elem.get('sOffset', '0'))
@@ -388,12 +394,12 @@ class MapParser:
                                     break
 
 
-                left_all.append((lane_id, sw_offset, a_w, b_w, c_w, d_w, lane_type, lane_pred, lane_succ, travel_dir, lane_change))
+                left_all.append((lane_id, sw_offset, a_w, b_w, c_w, d_w, lane_type, lane_pred, lane_succ, travel_dir, lane_change, line_style, line_color))
             left_all.sort(key=lambda x: x[0])
         cum_width_left = np.zeros_like(s_arr)
 
         for info in left_all:
-            lane_id, sw_offset, a_w, b_w, c_w, d_w, lane_type, lane_pred, lane_succ ,travel_dir, lane_change = info
+            lane_id, sw_offset, a_w, b_w, c_w, d_w, lane_type, lane_pred, lane_succ ,travel_dir, lane_change, line_style, line_color = info
             w_current = offset_poly(s_arr, sw_offset, a_w, b_w, c_w, d_w)
             if lane_type == "driving":
                 current_offset = global_offset + cum_width_left + w_current/2.0
@@ -424,7 +430,13 @@ class MapParser:
                     headings_ = headings
                     s_arr_ = s_arr
                     sampled_points_ = sampled_points
-                lane_obj = Lane(road_obj, lane_id, "left", sampled_points_, headings=headings_, widths=w_current_, hauls=s_arr_, in_range=False, travel_dir=travel_dir, lane_change=lane_change)
+                lane_obj = Lane(
+                    road_obj, lane_id, self.lane_code, "left", 
+                    sampled_points_, headings=headings_, widths=w_current_, hauls=s_arr_, 
+                    in_range=False, travel_dir=travel_dir, lane_change=lane_change, 
+                    line_style=line_style, line_color=line_color
+                    )
+                self.lane_code += int(1)
                 # 记录从 lane 自身获取的链接信息（可能只有 lane id，没有 Road 信息）
                 if travel_dir=='backward':
                     if lane_pred is not None:
@@ -455,6 +467,8 @@ class MapParser:
                 user_data_elem = lane.find('userData')
                 travel_dir = ""
                 lane_change = ""
+                line_style = ""
+                line_color = ""
                 if user_data_elem is not None:
                     vector_lane_elem = user_data_elem.find('vectorLane')
                     if vector_lane_elem is not None:
@@ -462,6 +476,8 @@ class MapParser:
                 road_mark_elem = lane.find('roadMark')
                 if road_mark_elem is not None:
                     lane_change = road_mark_elem.get('laneChange','')
+                    line_style = road_mark_elem.get('type','')
+                    line_color = road_mark_elem.get('color','')
 
                 if width_elem is not None:
                     sw_offset = float(width_elem.get('sOffset', '0'))
@@ -519,12 +535,12 @@ class MapParser:
                                     break
 
                                 
-                right_all.append((lane_id, sw_offset, a_w, b_w, c_w, d_w, lane_type, lane_pred, lane_succ, travel_dir, lane_change))
+                right_all.append((lane_id, sw_offset, a_w, b_w, c_w, d_w, lane_type, lane_pred, lane_succ, travel_dir, lane_change, line_style, line_color))
             right_all.sort(key=lambda x: x[0], reverse=True)
         cum_width_right = np.zeros_like(s_arr)
 
         for info in right_all:
-            lane_id, sw_offset, a_w, b_w, c_w, d_w, lane_type, lane_pred, lane_succ ,travel_dir, lane_change = info
+            lane_id, sw_offset, a_w, b_w, c_w, d_w, lane_type, lane_pred, lane_succ ,travel_dir, lane_change, line_style, line_color = info
             w_current = offset_poly(s_arr, sw_offset, a_w, b_w, c_w, d_w)
             if lane_type == "driving":
                 current_offset = global_offset - (cum_width_right + w_current/2.0)
@@ -555,7 +571,13 @@ class MapParser:
                     headings_ = headings
                     s_arr_ = s_arr
                     sampled_points_ = sampled_points
-                lane_obj = Lane(road_obj, lane_id, "right", sampled_points_, headings=headings_, widths=w_current_, hauls=s_arr_, in_range=False, travel_dir=travel_dir, lane_change=lane_change)
+                lane_obj = Lane(
+                    road_obj, lane_id, self.lane_code, "right", 
+                    sampled_points_, headings=headings_, widths=w_current_, hauls=s_arr_, 
+                    in_range=False, travel_dir=travel_dir, lane_change=lane_change, 
+                    line_style=line_style, line_color=line_color
+                    )
+                self.lane_code += int(1)
                 if travel_dir=='backward':
                     if lane_pred is not None:
                         lane_obj.successor = lane_pred

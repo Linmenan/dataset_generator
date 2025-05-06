@@ -25,6 +25,7 @@ class Mode(enum.Enum):   # enum 支持位运算 :contentReference[oaicite:0]{in
 class SceneSimulator:
     def __init__(
             self, 
+            window_size = (1000, 600),
             mode:Mode = Mode.SYNC, 
             step:float = 0.05, 
             plot_step:int = 5, 
@@ -58,7 +59,7 @@ class SceneSimulator:
         self.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
         self.data_recorder = DataRecorder(data_path)
         # 创建并 show 视图
-        self.view = SimView(self)
+        self.view = SimView(self, size=window_size)
         self.view.show()
         logging.debug("simulator init")
     # ----------- 公共查询接口 -----------

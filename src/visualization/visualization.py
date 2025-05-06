@@ -1,14 +1,32 @@
+import math
+from typing import List
+import numpy as np
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtGui, QtCore, QtWidgets
 from pyqtgraph import TextItem
 
-import math
-from typing import List
 from ..models.agent import TrafficAgent
 from ..models.map_elements import Point2D
+
 import networkx as nx
-import numpy as np
 import plotly.graph_objects as go
+import random
+
+# 常见论文颜色（Tableau 10 + Set1）
+PAPER_COLORS = [
+    "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728",
+    "#9467bd", "#8c564b", "#e377c2", "#7f7f7f",
+    "#bcbd22", "#17becf", "#a65628", "#f781bf",
+]
+
+# 线型可选项（Qt 支持的 pen style）
+LINE_STYLES = [
+    QtCore.Qt.SolidLine,
+    QtCore.Qt.DashLine,
+    QtCore.Qt.DotLine,
+    QtCore.Qt.DashDotLine,
+    QtCore.Qt.DashDotDotLine,
+]
 
 # 全局把所有新建窗口的背景设成白色
 pg.setConfigOption('background', 'w')
@@ -34,58 +52,85 @@ def generate_circle_points(center, radius, num_points=50):
     y_circle = (cy + radius * np.sin(theta)).tolist()
     return x_circle, y_circle
 
-class SimView(QtWidgets.QWidget):
-    """
-    PyQtGraph 窗口，用于实时渲染车道线和智能体。
-    创建时先绘制所有车道；每次 update() 只更新颜色和多边形顶点，
-    完全在 GPU/Qt 侧渲染，性能大幅提升。
-    """
+class SimView(QtWidgets.QMainWindow):
     def __init__(self, sim, size=(900, 600), title="Real-Time Traffic"):
-        super().__init__(parent=None)
+        super().__init__()
         self.sim = sim
-        
-        self.setWindowTitle(title)     # 标题栏文字
-        self.resize(*size)             # 默认宽高
-        # ---------- 1) 搭积木 ----------
-        vbox = QtWidgets.QVBoxLayout(self)
-        vbox.setContentsMargins(0, 0, 0, 0)
+        self.setWindowTitle(title)
+        self.resize(*size)
 
-        # 1.1 绘图区域
+        # ========================
+        # 菜单栏：视图选项
+        # ========================
+        self.menu_bar = self.menuBar()
+        view_menu = self.menu_bar.addMenu("视图选项")
+
+        # ========================
+        # 1.1 绘图区域（左侧）
+        # ========================
         self.canvas = pg.GraphicsLayoutWidget()
-        vbox.addWidget(self.canvas, stretch=1)
-
-        self.plot = self.canvas.addPlot(row=0, col=0)
+        self.plot = self.canvas.addPlot()
         self.plot.setAspectLocked(True)
+        dock_plot = QtWidgets.QDockWidget("绘图区域", self)
+        dock_plot.setObjectName("绘图区域")
+        dock_plot.setWidget(self.canvas)
+        self.addDockWidget(QtCore.Qt.LeftDockWidgetArea, dock_plot)
+        view_menu.addAction(dock_plot.toggleViewAction())
+        dock_plot.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+        dock_plot.setFeatures(QtWidgets.QDockWidget.DockWidgetMovable | QtWidgets.QDockWidget.DockWidgetFloatable)
 
-        # 1.2 信息栏
+        # ========================
+        # 1.2 信息栏（右上）
+        # ========================
         self.info_label = QtWidgets.QLabel('')
+        self.info_label.setMinimumHeight(80)
         self.info_label.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop)
-        self.info_label.setMinimumHeight(32)           # 给点高度
         self.info_label.setStyleSheet(
             "background: rgba(255,255,255,180);"
             "font: 12pt 'Arial';"
             "padding: 4px;"
         )
-        vbox.addWidget(self.info_label, stretch=0)
+        dock_info = QtWidgets.QDockWidget("信息栏", self)
+        dock_info.setObjectName("信息栏")
+        dock_info.setWidget(self.info_label)
+        self.addDockWidget(QtCore.Qt.RightDockWidgetArea, dock_info)
+        view_menu.addAction(dock_info.toggleViewAction())
+        dock_info.setFeatures(QtWidgets.QDockWidget.DockWidgetMovable | QtWidgets.QDockWidget.DockWidgetFloatable)
 
-        self.lane_curves = {}    # {(road_id, lane_id): PlotDataItem}
-        self.agent_items = {}    # {agent.id: QGraphicsPolygonItem}
-        self.agent_arrows  = {}   # {agent.id: ArrowItem}
-        self.agent_texts = {}  # {agent.id: TextItem}
+        # ========================
+        # 1.3 数据曲线（右下）
+        # ========================
+        self.data_plot_widget = pg.PlotWidget(title="仿真数据曲线")
+        self.data_plot_widget.showGrid(x=True, y=True)
+        self.data_plot_widget.addLegend()
+        self.data_lines = {}
+
+        dock_curve = QtWidgets.QDockWidget("数据曲线", self)
+        dock_curve.setObjectName("数据曲线")
+        dock_curve.setWidget(self.data_plot_widget)
+        self.addDockWidget(QtCore.Qt.RightDockWidgetArea, dock_curve)  # 暂时放右边
+        self.splitDockWidget(dock_info, dock_curve, QtCore.Qt.Vertical)  # 将其垂直放在 info 下方
+        view_menu.addAction(dock_curve.toggleViewAction())
+        dock_curve.setFeatures(QtWidgets.QDockWidget.DockWidgetMovable | QtWidgets.QDockWidget.DockWidgetFloatable)
+        self.resizeDocks([dock_plot, dock_info], [700, 300], QtCore.Qt.Horizontal)
+        # ========================
+        # 可视化内容
+        # ========================
+
+        self.lane_curves = {}
+        self.agent_items = {}
+        self.agent_arrows = {}
+        self.agent_texts = {}
+        self.lane_countdowns = {}
+        self._temp_paths = {}
+
         self.text_style = {
             "color": "black",
             "font-size": "10pt",
-            "anchor": (0.5, 0.5),  # 文本锚点位于安全盒顶部中心
+            "anchor": (0.5, 0.5),
         }
-        self.lane_curves      = {}    # {(road_id, lane_id, 'c/l/r'): PlotDataItem}
-        self.lane_countdowns  = {}    # {(road_id, lane_id): TextItem}   # <— 新增
 
         self._init_lanes()
-
-        # 新增：临时路径存储
-        self._temp_paths = {}      # {name or id: PlotDataItem}
-        
-
 
         
     def add_temp_path(
@@ -130,72 +175,45 @@ class SimView(QtWidgets.QWidget):
         self._temp_paths.clear()
     
     def _init_lanes(self):
-        """首次绘制所有车道中心线为灰色虚线。"""
-        """首次绘制车道并在中线中点放一个空白 countdown 文本。"""
         for road in self.sim.map_parser.roads.values():
             for lane in road.lanes:
                 if not lane.sampled_points:
                     continue
-
-                # 拆解：center, left, right
                 centers = np.array([c[0] for c in lane.sampled_points])
                 lefts   = np.array([c[1] for c in lane.sampled_points])
                 rights  = np.array([c[2] for c in lane.sampled_points])
-                
-                # 设置横向偏移量
-                offset = 0.1
 
-                # 计算法向量，通过切向角旋转 90 度得到
-                normal_vectors = np.array([[-np.sin(heading), np.cos(heading)] for heading in lane.headings])
-                # 对 lefts 和 rights 采样点进行偏移
+                normal_vectors = np.array([[-np.sin(h), np.cos(h)] for h in lane.headings])
+                offset = 0.1
                 offset_lefts = lefts - offset * normal_vectors
                 offset_rights = rights + offset * normal_vectors
-                
+
                 lane_change = lane.lane_change
-                
-                if lane_change == 'both':
-                    l_bound_line_style = QtCore.Qt.DashLine
-                    r_bound_line_style = QtCore.Qt.DashLine
-                elif lane_change == 'increase':
-                    l_bound_line_style = QtCore.Qt.DashLine
-                    r_bound_line_style = QtCore.Qt.SolidLine
-                elif lane_change == 'decrease':
-                    l_bound_line_style = QtCore.Qt.SolidLine
-                    r_bound_line_style = QtCore.Qt.DashLine
-                else:
-                    l_bound_line_style = QtCore.Qt.SolidLine
-                    r_bound_line_style = QtCore.Qt.SolidLine
-                # 中心线
-                curve_c = self.plot.plot(
-                    centers[:,0], centers[:,1],
-                    pen=pg.mkPen('grey', width=0.1, style=QtCore.Qt.DashLine)
-                )
+                style_map = {
+                    'both': (QtCore.Qt.DashLine, QtCore.Qt.DashLine),
+                    'increase': (QtCore.Qt.DashLine, QtCore.Qt.SolidLine),
+                    'decrease': (QtCore.Qt.SolidLine, QtCore.Qt.DashLine),
+                }
+                l_style, r_style = style_map.get(lane_change, (QtCore.Qt.SolidLine, QtCore.Qt.SolidLine))
+
+                curve_c = self.plot.plot(centers[:, 0], centers[:, 1],
+                                         pen=pg.mkPen('grey', width=0.1, style=QtCore.Qt.DashLine))
                 self.lane_curves[(road.road_id, lane.lane_id, 'c', lane_change)] = curve_c
 
-                # ----- Countdown 文字 -----
-                # mid_x, mid_y = centers[len(centers) // 2]
                 mid_x, mid_y = centers[0]
-                # txt = TextItem('', color='black', anchor=(0.5, -0.3))
                 txt = TextItem('', color='black', anchor=(0.0, 0.0))
                 txt.setFont(QtGui.QFont('Arial', 10, QtGui.QFont.Bold))
                 txt.setPos(mid_x, mid_y)
                 self.plot.addItem(txt)
                 self.lane_countdowns[(road.road_id, lane.lane_id)] = txt
 
-                # 左边界
-                curve_l = self.plot.plot(
-                    offset_lefts[:,0], offset_lefts[:,1],
-                    pen=pg.mkPen('grey', width=1, style=l_bound_line_style)
-                )
+                curve_l = self.plot.plot(offset_lefts[:, 0], offset_lefts[:, 1],
+                                         pen=pg.mkPen('grey', width=1, style=l_style))
                 self.lane_curves[(road.road_id, lane.lane_id, 'l', lane_change)] = curve_l
 
-                # 右边界
-                curve_r = self.plot.plot(
-                    offset_rights[:,0], offset_rights[:,1],
-                    pen=pg.mkPen('grey', width=1, style=r_bound_line_style)
-                )
+                curve_r = self.plot.plot(offset_rights[:, 0], offset_rights[:, 1],
+                                         pen=pg.mkPen('grey', width=1, style=r_style))
                 self.lane_curves[(road.road_id, lane.lane_id, 'r', lane_change)] = curve_r
-    
 
     def update(self):
         """每步仿真后调用：更新车道颜色 & 智能体安全盒。"""
@@ -271,28 +289,37 @@ class SimView(QtWidgets.QWidget):
                 # 更新位置和角度
                 arrow.setPos(center_pos[0], center_pos[1])
                 arrow.setStyle(angle=angle_deg)
-            # ---- 新增：更新ID文本 ----
-            # 计算文本位置：安全盒顶部中点（取左前和右前点的中点）
-            text_item = self.agent_texts.get(ag.id)
-            if text_item is None:
-                text_item = TextItem(
-                    text=ag.id,
-                    color=self.text_style["color"],
-                    anchor=self.text_style["anchor"],
-                )
-                text_item.setFont(QtGui.QFont("Arial", 10))
-                self.plot.addItem(text_item)
-                self.agent_texts[ag.id] = text_item
-            text_item.setPos(ag.pos.x, ag.pos.y)
-
-        # ---- 3) 更新外部信息标签 ----
+        
         t = self.sim.sim_time
-        ego = self.sim.ego_vehicle.pos
-        if ego is not None and t is not None:
-            self.info_label.setText(
-                f"Time: {t:.2f}s    "
-                f"Ego: ({ego.x:.2f}, {ego.y:.2f})"
-            )
+        ego = self.sim.ego_vehicle
+
+        # 更新速度曲线
+        if t is not None:
+            name = 'ego_speed'
+            if name not in self.data_lines:
+                color = random.choice(PAPER_COLORS)
+                style = random.choice(LINE_STYLES)
+                pen = pg.mkPen(color=color, width=2, style=style)
+                curve = self.data_plot_widget.plot(name="Ego Speed", pen=pen)
+                self.data_lines[name] = {"curve": curve, "x": [], "y": []}
+
+            line = self.data_lines[name]
+            line["x"].append(t)
+            line["y"].append(ego.speed)
+            line["curve"].setData(line["x"], line["y"])
+
+            # 设置横坐标显示最近10秒范围
+            window_width = 10.0  # 滚动窗口宽度（秒）
+            start_time = max(0.0, t - 10.0)
+            end_time = max(window_width, t)
+            self.data_plot_widget.setXRange(start_time, end_time, padding=0)
+
+        # 更新信息栏
+        self.info_label.setText(
+            f"Time: {t:.2f}s\n"
+            f"Ego: (x: {ego.pos.x:.2f} m, y: {ego.pos.y:.2f} m, yaw: {ego.hdg / math.pi * 180:.1f} deg)\n"
+            f"speed: {ego.speed:.1f} m/s"
+        )
 
 
 
