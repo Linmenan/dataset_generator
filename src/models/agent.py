@@ -1,6 +1,6 @@
 import numpy as np
 from typing import Tuple, List
-from .map_elements import Point2D
+from .map_elements import Pose2D
 
 class TrafficAgent:
     """
@@ -10,9 +10,9 @@ class TrafficAgent:
     def __init__(
         self,
         id: str = "",
-        pos: Point2D=Point2D(0, 0),          # 位置 (m, m)
-        hdg: float = 0.0,                    # 航向角 (rad, 左正)
+        pos: Pose2D=Pose2D(0, 0, 0),         # 位置,航向角 (m, m, rad左正)
         speed: float = 0.0,                  # 纵向车速 (m/s)
+        accel: float = 0.0,                  # 纵向加速度 (m/s²)
         curvature: float = 0.0,              # 行驶曲率 (1/m)
         width: float = 1.96,                 # 车宽 (m)
         length_front: float = 3.945,         # 前保险杠到质心距离 (m)
@@ -30,9 +30,9 @@ class TrafficAgent:
         current_s = float('inf')
     ) -> None:
         self.id = str(id)
-        self.pos = pos if pos is not None else Point2D(0, 0)
-        self.hdg = float(hdg)
+        self.pos = pos if pos is not None else Pose2D(0, 0, 0)
         self.speed = float(speed)
+        self.accel = float(accel)
         self.curvature = float(curvature)
         self.width = float(width)
         self.length_front = float(length_front)
@@ -55,6 +55,8 @@ class TrafficAgent:
         """
         仿真步进。
         """
+        self.accel = a_cmd
+        self.curvature = cur_cmd
         delta_speed = a_cmd * dt
         delta_s = 0.0
         if delta_speed + self.speed < 0:
@@ -66,16 +68,16 @@ class TrafficAgent:
             self.speed += delta_speed
             
         if abs(cur_cmd)>1.0e-3:
-            self.pos = Point2D(
-                self.pos.x + (np.sin(self.hdg + cur_cmd * delta_s) - np.sin(self.hdg))/cur_cmd, 
-                self.pos.y + (np.cos(self.hdg) - np.cos(self.hdg + cur_cmd * delta_s))/cur_cmd
+            self.pos = Pose2D(
+                self.pos.x + (np.sin(self.pos.yaw + cur_cmd * delta_s) - np.sin(self.pos.yaw))/cur_cmd, 
+                self.pos.y + (np.cos(self.pos.yaw) - np.cos(self.pos.yaw + cur_cmd * delta_s))/cur_cmd,
+                self.pos.yaw+cur_cmd * delta_s
                 )
-            self.hdg += cur_cmd * delta_s
-            
         else:
-            self.pos = Point2D(
-                self.pos.x + delta_s*np.cos(self.hdg), 
-                self.pos.y+delta_s*np.sin(self.hdg)
+            self.pos = Pose2D(
+                self.pos.x + delta_s*np.cos(self.pos.yaw), 
+                self.pos.y+delta_s*np.sin(self.pos.yaw),
+                self.pos.yaw+cur_cmd * delta_s
                 )
         
 class EgoVehicle(TrafficAgent):
@@ -93,7 +95,6 @@ class EgoVehicle(TrafficAgent):
     def __init__(
         self,
         # EgoVehicle 独有字段
-        accel: float = 0.0,                     # 纵向加速度 (m/s²)
         torque: float = 0.0,                    # 车桥扭矩 (N·m)
         front_wheel_angle: float = 0.0,         # 前轮转角 δ_f (rad)
         steer_angle: float = 0.0,               # 方向盘转角 θ_s (rad)
@@ -109,7 +110,6 @@ class EgoVehicle(TrafficAgent):
         super().__init__(**kwargs)
 
         # --- 2. 运动 / 控制状态 ---
-        self.accel = float(accel)
         self.torque = float(torque)
         self.front_wheel_angle = float(front_wheel_angle)
         self.steer_angle = float(steer_angle)

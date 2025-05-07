@@ -41,7 +41,7 @@ def box_points(a: TrafficAgent):
              ( a.length_front,  hw),
              (-a.length_rear,  hw),
              (-a.length_rear, -hw)]
-    s, c = math.sin(a.hdg), math.cos(a.hdg)
+    s, c = math.sin(a.pos.yaw), math.cos(a.pos.yaw)
     return [(a.pos.x + lx*c - ly*s,
              a.pos.y + lx*s + ly*c) for lx, ly in local]
 
@@ -113,19 +113,15 @@ class SimView(QtWidgets.QMainWindow):
         # 1.3 数据曲线（右下）
         # ========================
         self.data_plot_widget = pg.PlotWidget(title="仿真数据曲线")
-        self.data_plot_widget.showGrid(x=True, y=True)
-        self.legend = self.data_plot_widget.addLegend(offset=(10, 10))
+        self.data_plot_widget.showGrid(x=True, y=True, alpha=0.2)
+        self.data_plot_widget.setBackground((240, 240, 240, 255))  # 浅灰背景
+        self.legend = self.data_plot_widget.addLegend(offset=(500, 20))
         self.data_plot_widget.setLabel('left', 'Value')
         self.data_plot_widget.setLabel('bottom', 'Time', 's')
 
         self.data_lines = {}
         self.color_idx = 0  # 颜色循环索引
         self.style_idx = 0  # 线型循环索引
-
-        # 手动为图例标签添加鼠标点击事件处理
-        for item in self.legend.items:
-            label = item[1]
-            label.mousePressEvent = lambda e, l=label: self.handle_legend_click(l)
 
         self.dock_curve = QtWidgets.QDockWidget("数据曲线", self)
         self.dock_curve.setObjectName("数据曲线")
@@ -164,9 +160,9 @@ class SimView(QtWidgets.QMainWindow):
     def add_temp_path(
         self,
         path_points: List[Point2D],
-        pen: pg.mkPen = None,
-        name: str = None
-    ) -> pg.PlotDataItem:
+        name: str = None,
+        color: str = None,
+    ) -> None:
         """
         在视图中绘制一条临时路径（折线）。
         
@@ -178,9 +174,10 @@ class SimView(QtWidgets.QMainWindow):
             对应的 PlotDataItem
         """
         # 生成默认 pen
-        if pen is None:
-            pen = pg.mkPen(color='blue', width=2)  # 红色，宽度 2
-
+        if color is None:
+            pen = pg.mkPen(width=2)  # 宽度 2
+        else:
+            pen = pg.mkPen(color=color, width=2)  # 宽度 2
         # 从 Point2D 列表中提取 x, y
         xs = [pt.x for pt in path_points]
         ys = [pt.y for pt in path_points]
@@ -192,7 +189,6 @@ class SimView(QtWidgets.QMainWindow):
         # 存储
         key = name or id(item)
         self._temp_paths[key] = item
-        return item
 
     def clear_temp_paths(self) -> None:
         """
@@ -202,29 +198,6 @@ class SimView(QtWidgets.QMainWindow):
             self.plot.removeItem(item)
         self._temp_paths.clear()
     
-    def handle_legend_click(self, item, label):
-        """处理图例点击事件（显示/隐藏曲线）"""
-        # 从 label 对象获取曲线名称（假设 label 是曲线的 name）
-        curve_name = label.text()
-        self.toggle_curve_visibility(curve_name)
-
-    def toggle_curve_visibility(self, name: str):
-        """切换曲线可见性"""
-        if name not in self.data_lines:
-            return
-        
-        data = self.data_lines[name]
-        data["visible"] = not data["visible"]
-        
-        # 更新曲线透明度
-        opacity = 1.0 if data["visible"] else 0.2
-        pen = pg.mkPen(color=data["color"], width=2, style=data["style"], opacity=opacity)
-        data["curve"].setPen(pen)
-        
-        # 更新图例文字透明度
-        for item in self.legend.items:
-            if item[1].text == name:
-                item[1].setOpacity(opacity)
 
     def _init_lanes(self):
         for road in self.sim.map_parser.roads.values():
@@ -269,7 +242,7 @@ class SimView(QtWidgets.QMainWindow):
     
     def add_data(self, dataname:str, x:float, y:float)->None:
         if dataname not in self.data_lines:
-            self.data_lines[dataname] = {"visible": True, "x": [x], "y": [y]}
+            self.data_lines[dataname] = {"x": [x], "y": [y]}
         self.data_lines[dataname]["x"].append(x)
         self.data_lines[dataname]["y"].append(y)
 
@@ -327,8 +300,8 @@ class SimView(QtWidgets.QMainWindow):
                 item.setPolygon(poly)
 
             # 2.2 朝向箭头
-            center_pos = (ag.pos.x+ag.length_front*np.cos(ag.hdg), ag.pos.y+ag.length_front*np.sin(ag.hdg))
-            angle_deg = 180.0-math.degrees(ag.hdg)  # PyQtGraph 默认以水平向右为 0°
+            center_pos = (ag.pos.x+ag.length_front*np.cos(ag.pos.yaw), ag.pos.y+ag.length_front*np.sin(ag.pos.yaw))
+            angle_deg = 180.0-math.degrees(ag.pos.yaw)  # PyQtGraph 默认以水平向右为 0°
             arrow = self.agent_arrows.get(ag.id)
             if arrow is None:
                 # 新建箭头
@@ -354,7 +327,7 @@ class SimView(QtWidgets.QMainWindow):
         # 更新信息栏
         self.info_label.setText(
             f"Time: {t:.2f}s\n"
-            f"Ego: (x: {ego.pos.x:.2f} m, y: {ego.pos.y:.2f} m, yaw: {ego.hdg / math.pi * 180:.1f} deg)\n"
+            f"Ego: (x: {ego.pos.x:.2f} m, y: {ego.pos.y:.2f} m, yaw: {ego.pos.yaw / math.pi * 180:.1f} deg)\n"
             f"speed: {ego.speed:.1f} m/s"
         )
 
@@ -375,17 +348,10 @@ class SimView(QtWidgets.QMainWindow):
                 data["curve"] = curve
                 data["color"] = color
                 data["style"] = style
-                data["visible"] = True  # 默认可见
 
-                # 绑定图例点击事件
-                legend_label = self.legend.getLabel(curve)
-                legend_label.mousePressEvent = lambda e, n=name: self.toggle_curve_visibility(n)
 
-            # 更新曲线数据
-            if data["visible"]:
-                data["curve"].setData(data["x"], data["y"])
-            else:
-                data["curve"].setData([], [])  # 隐藏时清空数据
+            data["curve"].setData(data["x"], data["y"])
+
 
         # 设置时间轴范围（最近10秒）
         window_width = 10.0

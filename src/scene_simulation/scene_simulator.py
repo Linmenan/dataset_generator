@@ -20,6 +20,7 @@ from IPython.display import clear_output
 import logging
 from ..motion.agent_motion import LateralMPC_NL
 from ..utils.color_print import RED,RESET,GREEN,YELLOW,BLUE,CYAN,MAGENTA
+from ..utils.common import normalize_angle
 
 class Mode(enum.Enum):   # enum 支持位运算 :contentReference[oaicite:0]{index=0}
     SYNC = "sync"
@@ -50,7 +51,15 @@ class SceneSimulator:
         self._start_wall: Optional[float] = None    # 真实起始秒 (perf_counter)
         self._running = False
         self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self.mpc = LateralMPC_NL(pred_horizon=30.0, ctrl_horizon=10.0, step_len=1.0)
+        self.mpc = LateralMPC_NL(
+            pred_horizon=10.0, ctrl_horizon=2.0, step_len=1.0, weights=
+            {
+                'cte':   1.0,
+                'ephi':   0.5,
+                'curv':  0.005,
+                'dcurv': 0.01
+            }
+            )
 
         self.cruising_speed = 10.0
         self.crossing_speed = 5.0
@@ -133,9 +142,12 @@ class SceneSimulator:
                     hdg = lane.headings[index]
                     speed = 0.0
                     vehicle = EgoVehicle(id=str(0), 
-                                        pos=Point2D(rear_point[0], 
-                                                    rear_point[1]), 
-                                        hdg=hdg, speed=speed)
+                                        pos=Pose2D(
+                                            rear_point[0], 
+                                            rear_point[1],
+                                            hdg
+                                        ),
+                                        speed=speed)
                     collision = False
                     for agent in self.agents:
                         if is_collision(vehicle, agent):
@@ -159,9 +171,12 @@ class SceneSimulator:
                     hdg = lane.headings[index]
                     speed = 0.0
                     traffic_agent = TrafficAgent(id = str(len(self.agents)+1), 
-                                                pos=Point2D(rear_point[0], 
-                                                            rear_point[1]), 
-                                                hdg=hdg, speed=speed)
+                                                pos=Pose2D(
+                                                    rear_point[0], 
+                                                    rear_point[1],
+                                                    hdg
+                                                ), 
+                                                speed=speed)
                     collision = False
                     for agent in self.agents:
                         if is_collision(traffic_agent, agent):
@@ -172,18 +187,59 @@ class SceneSimulator:
                         traffic_agent.current_lane_index = lane.lane_id
                         traffic_agent.current_lane_unicode = lane.unicode
                         self.agents.append(traffic_agent) 
+
+    def update_states(self)->None:
+            clear_output(wait=True)
+            self.view.clear_temp_paths()
+
+            for current_agent in [self.ego_vehicle]+self.agents:
+                self.data_recorder.add_data(current_agent.id,'sim_time',self.sim_time)
+
+                road_id = current_agent.current_road_index
+                lane_id = current_agent.current_lane_index
+                current_lane = self.map_parser.lanes[current_agent.current_lane_unicode]
+                logging.debug(f"Agent {current_agent.id},R{road_id},L{lane_id}:")
+                self.data_recorder.add_data(current_agent.id,'RoadId_LaneId_JuncId',road_id+"_"+lane_id+"_"+current_lane.belone_road.junction)
+                current_agent.current_s,current_b,current_out,_,head_ref = current_lane.projection(current_agent.pos)
+                ephi = normalize_angle(head_ref-current_agent.pos.yaw)
+
+                remain_s = current_lane.length - current_agent.current_s
+                if current_out:
+                    logging.debug(f"\t{RED}偏离 R:{road_id},L:{lane_id}{RESET}")
+                else:
+                    logging.debug(f"\ts:{current_agent.current_s:.3f}, 剩余{remain_s:.3f}m, 横向误差:{current_b:.3f}")
+                self.data_recorder.add_data(current_agent.id,'RemainS',remain_s)
+                self.data_recorder.add_data(current_agent.id,'Cte',current_b)
                 
-    def extract_lanes_in_range(self, roads, current_pos):
-        cx, cy = current_pos
-        for road in roads.values():
-            road_in_range = False
-            for lane in road.lanes:
-                for (x, y) in lane.sampled_points:
-                    if np.linalg.norm([x-cx, y-cy]) <= self.perception_range:
-                        lane.in_range = True
-                        road_in_range = True
-                        break
-            road.on_route = road_in_range
+                current_v = current_agent.speed
+                self.data_recorder.add_data(current_agent.id,'Speed',current_v)
+                
+                self.agent_route(current_agent)
+                self.get_interactive_agent(current_agent)
+    
+                acc_cmd = self.agent_longitudinal_control(current_agent=current_agent)
+                curvature_cmd = self.agent_leternal_control(current_agent=current_agent)
+
+                logging.debug(f"\t v:{current_v:.3f}, acc_cmd:{acc_cmd:.3f}, cur_cmd:{curvature_cmd:.4f}")
+                self.data_recorder.add_data(current_agent.id,'AccCmd',acc_cmd)
+                self.data_recorder.add_data(current_agent.id,'CurCmd',curvature_cmd)
+
+                current_agent.step(a_cmd = acc_cmd, cur_cmd = curvature_cmd, dt = self.step)
+                if current_agent.id=="0":
+                    self.view.add_data("ego_velocity (m/s)", self.sim_time, current_agent.speed)
+                    self.view.add_data("ego_cte (m)", self.sim_time, current_b)
+                    self.view.add_data("ego_ephi (deg)", self.sim_time, ephi/math.pi*180)
+
+                #更新当前道路和车道
+                if remain_s < 0.1:
+                    if current_lane.successor:
+                        current_agent.current_road_index = current_agent.road_map[1].belone_road.road_id
+                        current_agent.current_lane_index = current_agent.road_map[1].lane_id
+                        current_agent.current_lane_unicode = current_agent.road_map[1].unicode
+
+                        current_agent.road_map = current_agent.road_map[1:]
+                        current_agent.ref_line = current_agent.ref_line[1:]
+                        current_agent.plan_haul = current_agent.plan_haul[1:]
 
     def get_road(self, road_index:str)->Road:
         for road in self.map_parser.roads.values():
@@ -226,7 +282,7 @@ class SceneSimulator:
             return self.compute_acceleration(self.cruising_speed,current_speed)
         return (target_speed**2 - current_speed**2)/(2*remain_distance)
     
-    def pure_pursuit_curvature(self, position: Point2D, heading: float, path: List[Point2D], lookahead: float) -> float:
+    def pure_pursuit_curvature(self, pose: Pose2D, path: List[Point2D], lookahead: float) -> float:
         """
         纯追踪法计算曲率 κ：
         κ = 2 * sin(alpha) / L_d
@@ -243,14 +299,14 @@ class SceneSimulator:
         """
 
         # 1) 找到最近的路径点索引
-        dists = [(pt.x - position.x)**2 + (pt.y - position.y)**2 for pt in path]
+        dists = [(pt.x - pose.x)**2 + (pt.y - pose.y)**2 for pt in path]
         idx0 = min(range(len(path)), key=lambda i: dists[i])
 
         # 2) 在后续点中寻找首个满足距离 >= lookahead 的预瞄点
         target: Optional[Point2D] = None
         L2 = lookahead**2
         for pt in path[idx0+1:]:
-            if (pt.x - position.x)**2 + (pt.y - position.y)**2 >= L2:
+            if (pt.x - pose.x)**2 + (pt.y - pose.y)**2 >= L2:
                 target = pt
                 break
         # 若后面都不够远，就用最后一个点
@@ -259,13 +315,12 @@ class SceneSimulator:
 
 
         # 4) 计算车头指向“预瞄点”的角度 alpha
-        dx = target.x - position.x
-        dy = target.y - position.y
+        dx = target.x - pose.x
+        dy = target.y - pose.y
         angle_to_target = math.atan2(dy, dx)
 
         # 归一化角度差到 [-pi, +pi]
-        alpha = angle_to_target - heading
-        alpha = (alpha + math.pi) % (2*math.pi) - math.pi
+        alpha = normalize_angle(angle_to_target - pose.yaw)
 
         # 5) 计算曲率 κ = 2*sin(alpha) / L_d
         # sin(alpha) 左转为正，右转为负
@@ -444,67 +499,26 @@ class SceneSimulator:
     
     def agent_leternal_control(self,current_agent)->float:
         #横向控制
-
+        import time
         ref_line = [element for sub_list in current_agent.ref_line for element in sub_list]
-        # self.view.add_temp_path(ref_line)
-
-        if current_agent.id == 0:
-            curvature_cmd = self.mpc.solve(current_agent,current_agent.ref_line)
+        # curvature_cmd = self.pure_pursuit_curvature(
+        #                 pose=current_agent.pos,
+        #                 path=ref_line,
+        #                 lookahead=5.0
+        #             )
+        if current_agent.id == "0":
+            self.view.add_temp_path(ref_line,color="r")
+            start = time.perf_counter()
+            curvature_cmd, pred_traj = self.mpc.solve(current_agent,ref_line)
+            end = time.perf_counter()
+            print(f"MPC time:{end-start}")
+            self.view.add_temp_path(pred_traj,color="b")
         else:
             curvature_cmd = self.pure_pursuit_curvature(
-                position=current_agent.pos,
-                heading=current_agent.hdg,
+                pose=current_agent.pos,
                 path=ref_line,
                 lookahead=5.0
             )
         return curvature_cmd
 
-    def update_states(self)->None:
-        clear_output(wait=True)
-        self.view.clear_temp_paths()
-
-        for current_agent in [self.ego_vehicle]+self.agents:
-            self.data_recorder.add_data(current_agent.id,'sim_time',self.sim_time)
-
-            road_id = current_agent.current_road_index
-            lane_id = current_agent.current_lane_index
-            current_lane = self.map_parser.lanes[current_agent.current_lane_unicode]
-            logging.debug(f"Agent {current_agent.id},R{road_id},L{lane_id}:")
-            self.data_recorder.add_data(current_agent.id,'RoadId_LaneId_JuncId',road_id+"_"+lane_id+"_"+current_lane.belone_road.junction)
-            current_agent.current_s,current_b,current_out,_,_ = current_lane.projection(current_agent.pos)
-            remain_s = current_lane.length - current_agent.current_s
-            if current_out:
-                logging.debug(f"\t{RED}偏离 R:{road_id},L:{lane_id}{RESET}")
-            else:
-                logging.debug(f"\ts:{current_agent.current_s:.3f}, 剩余{remain_s:.3f}m, 横向误差:{current_b:.3f}")
-            self.data_recorder.add_data(current_agent.id,'RemainS',remain_s)
-            self.data_recorder.add_data(current_agent.id,'Cte',current_b)
-            
-            current_v = current_agent.speed
-            self.data_recorder.add_data(current_agent.id,'Speed',current_v)
-            
-            self.agent_route(current_agent)
-            self.get_interactive_agent(current_agent)
- 
-            acc_cmd = self.agent_longitudinal_control(current_agent=current_agent)
-            curvature_cmd = self.agent_leternal_control(current_agent=current_agent)
-
-            logging.debug(f"\t v:{current_v:.3f}, acc_cmd:{acc_cmd:.3f}, cur_cmd:{curvature_cmd:.4f}")
-            self.data_recorder.add_data(current_agent.id,'AccCmd',acc_cmd)
-            self.data_recorder.add_data(current_agent.id,'CurCmd',curvature_cmd)
-
-            current_agent.step(a_cmd = acc_cmd, cur_cmd = curvature_cmd, dt = self.step)
-            if current_agent.id=="0":
-                self.view.add_data("ego_velocity", self.sim_time, current_agent.speed)
-                self.view.add_data("ego_cte", self.sim_time, current_b)
-
-            #更新当前道路和车道
-            if remain_s < 0.1:
-                if current_lane.successor:
-                    current_agent.current_road_index = current_agent.road_map[1].belone_road.road_id
-                    current_agent.current_lane_index = current_agent.road_map[1].lane_id
-                    current_agent.current_lane_unicode = current_agent.road_map[1].unicode
-
-                    current_agent.road_map = current_agent.road_map[1:]
-                    current_agent.ref_line = current_agent.ref_line[1:]
-                    current_agent.plan_haul = current_agent.plan_haul[1:]
+    

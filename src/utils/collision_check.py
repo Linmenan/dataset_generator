@@ -15,7 +15,7 @@ def _box_corners(agent: TrafficAgent) -> np.ndarray:
         [-agent.length_rear,  half_w],  # 右后
     ])
 
-    sin_h, cos_h = np.sin(agent.hdg), np.cos(agent.hdg)
+    sin_h, cos_h = np.sin(agent.pos.yaw), np.cos(agent.pos.yaw)
     rot = np.array([[cos_h, -sin_h],
                     [sin_h,  cos_h]])              # 2×2 旋转矩阵
 

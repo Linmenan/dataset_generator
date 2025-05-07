@@ -5,6 +5,12 @@ class Point2D:
         self.x = x
         self.y = y
 
+class Pose2D(Point2D):
+    def __init__(self, x, y, yaw) -> None:
+        self.x = x
+        self.y = y
+        self.yaw = yaw
+
 class Control:
     def __init__(self, id , type) -> None:
         self.signal_id = str(id)
