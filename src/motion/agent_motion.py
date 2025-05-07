@@ -253,4 +253,4 @@ class LateralMPC_NL:
         )
         pred_traj = [Point2D(x, y) for x, y, _, _ in traj_opt]
         kappa_cmd = ego.curvature + float(dkappa_opt[0])
-        return kappa_cmd, pred_traj
+        return kappa_cmd, pred_traj, sub_ref

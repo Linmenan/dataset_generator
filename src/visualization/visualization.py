@@ -161,33 +161,55 @@ class SimView(QtWidgets.QMainWindow):
         self,
         path_points: List[Point2D],
         name: str = None,
-        color: str = None,
+        color: str = "blue",
+        line_width: float = 2.0,
+        line_style: str = "solid",
+        alpha: float = 1.0,
+        z_value: float = 0  # 新增层级控制参数
     ) -> None:
         """
-        在视图中绘制一条临时路径（折线）。
-        
-        参数：
-            path_points: 一串 (x, y) 点，用于绘制折线
-            pen:        一个 pyqtgraph.mkPen 对象，用于设置颜色、宽度等
-            name:       可选的标识符，用于后续移除，若为 None 则自动生成
-        返回：
-            对应的 PlotDataItem
+            path_points: 一串 Point2D 点，用于绘制折线
+            name:       可选的标识符，用于后续移除（若为 None 则自动生成）
+            color:      线条颜色（支持颜色名称/十六进制/RGB/RGBA，如 "red", "#FF0000", "rgb(255,0,0)", "rgba(255,0,0,0.5)"）
+            line_width: 线条宽度（默认 2.0）
+            line_style: 线型（"solid", "dash", "dot", "dashdot", "dashdotdot"）
+            alpha:      透明度（0.0完全透明 ~ 1.0完全不透明，默认1.0）
         """
-        # 生成默认 pen
-        if color is None:
-            pen = pg.mkPen(width=2)  # 宽度 2
+        # 线型映射字典
+        style_map = {
+            "solid": QtCore.Qt.SolidLine,
+            "dash": QtCore.Qt.DashLine,
+            "dot": QtCore.Qt.DotLine,
+            "dashdot": QtCore.Qt.DashDotLine,
+            "dashdotdot": QtCore.Qt.DashDotDotLine,
+        }
+        
+        # 处理颜色和透明度
+        if isinstance(color, str) and color.startswith('rgba'):
+            # 直接使用RGBA字符串（如 "rgba(255,0,0,0.5)"）
+            pen_color = color
         else:
-            pen = pg.mkPen(color=color, width=2)  # 宽度 2
-        # 从 Point2D 列表中提取 x, y
+            # 将颜色名称/HEX/RGB转换为QColor并添加透明度
+            qcolor = pg.mkColor(color)
+            qcolor.setAlphaF(alpha)  # 设置透明度
+            pen_color = qcolor
+        
+        # 创建画笔（Pen）
+        pen = pg.mkPen(
+            color=pen_color,
+            width=line_width,
+            style=style_map.get(line_style.lower(), QtCore.Qt.SolidLine)
+        )
+        
+        # 提取坐标
         xs = [pt.x for pt in path_points]
         ys = [pt.y for pt in path_points]
-
-
-        # 绘制
-        item = self.plot.plot(xs, ys, pen=pen)
         
-        # 存储
-        key = name or id(item)
+        # 绘制路径
+        item = self.plot.plot(xs, ys, pen=pen)
+        item.setZValue(z_value)  # 设置层级
+        # 存储引用
+        key = name or f"temp_path_{id(item)}"
         self._temp_paths[key] = item
 
     def clear_temp_paths(self) -> None:

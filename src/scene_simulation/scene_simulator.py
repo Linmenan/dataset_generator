@@ -52,7 +52,7 @@ class SceneSimulator:
         self._running = False
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self.mpc = LateralMPC_NL(
-            pred_horizon=10.0, ctrl_horizon=2.0, step_len=1.0, weights=
+            pred_horizon=5.0, ctrl_horizon=2.0, step_len=1.0, weights=
             {
                 'cte':   1.0,
                 'ephi':   0.5,
@@ -507,12 +507,13 @@ class SceneSimulator:
         #                 lookahead=5.0
         #             )
         if current_agent.id == "0":
-            self.view.add_temp_path(ref_line,color="r")
             start = time.perf_counter()
-            curvature_cmd, pred_traj = self.mpc.solve(current_agent,ref_line)
+            curvature_cmd, pred_traj, sub_ref = self.mpc.solve(current_agent,ref_line)
             end = time.perf_counter()
             print(f"MPC time:{end-start}")
-            self.view.add_temp_path(pred_traj,color="b")
+            self.view.add_temp_path(ref_line,color="c",line_width=8,alpha=0.2,z_value=0)
+            self.view.add_temp_path(sub_ref,color="m",z_value=1)
+            self.view.add_temp_path(pred_traj,color="b",z_value=2)
         else:
             curvature_cmd = self.pure_pursuit_curvature(
                 pose=current_agent.pos,
