@@ -147,7 +147,7 @@ class SimView(QtWidgets.QMainWindow):
         self.agent_texts = {}
         self.lane_countdowns = {}
         self._temp_paths = {}
-
+        
         self.text_style = {
             "color": "black",
             "font-size": "10pt",
@@ -282,7 +282,7 @@ class SimView(QtWidgets.QMainWindow):
                 continue
 
             # 有信号灯
-            color, countdown = self.sim.get_lane_traffic_light(rid, lid)
+            color, countdown, _ = self.sim.get_lane_traffic_light(rid, lid)
             if color!='grey':
                 if kind == 'c':      # 中心线
                     # curve.setPen(pg.mkPen('grey', width=0.1)) 
@@ -342,7 +342,19 @@ class SimView(QtWidgets.QMainWindow):
                 # 更新位置和角度
                 arrow.setPos(center_pos[0], center_pos[1])
                 arrow.setStyle(angle=angle_deg)
-        
+
+            text_item = self.agent_texts.get(ag.id)
+            if text_item is None:
+                text_item = TextItem(
+                    text=ag.id,
+                    color=self.text_style["color"],
+                    anchor=self.text_style["anchor"],
+                )
+                text_item.setFont(QtGui.QFont("Arial", 10))
+                self.plot.addItem(text_item)
+                self.agent_texts[ag.id] = text_item
+            text_item.setPos(ag.pos.x, ag.pos.y)
+
         t = self.sim.sim_time
         ego = self.sim.ego_vehicle
 

@@ -26,8 +26,11 @@ class TrafficAgent:
         current_lane_index: str = "", 
         current_lane_unicode: int = -1,
         nearerst_agent = None,
-        min_distance = float('inf'),
-        current_s = float('inf')
+        min_distance:float = float('inf'),
+        lane_change:Tuple[int,int] = (-1,-1),
+        current_s:float = float('inf'),
+        remain_s:float = float('inf'),
+        way_right_level:int = int(-1),
     ) -> None:
         self.id = str(id)
         self.pos = pos if pos is not None else Pose2D(0, 0, 0)
@@ -50,7 +53,26 @@ class TrafficAgent:
         self.plan_haul = []                  # 记录路线规划路段距离
         self.nearerst_agent = nearerst_agent # 记录前方车辆
         self.min_distance = min_distance
+        self.lane_change = lane_change
         self.current_s = current_s
+        self.remain_s = remain_s
+        self.way_right_level = way_right_level
+    def pred(self,dt: float)->'TrafficAgent':
+        speed = self.speed
+        delta_s = speed*dt
+        if abs(self.curvature)>1.0e-3:
+            pos = Pose2D(
+                self.pos.x + (np.sin(self.pos.yaw + self.curvature * delta_s) - np.sin(self.pos.yaw))/self.curvature, 
+                self.pos.y + (np.cos(self.pos.yaw) - np.cos(self.pos.yaw + self.curvature * delta_s))/self.curvature,
+                self.pos.yaw+self.curvature * delta_s
+                )
+        else:
+            pos = Pose2D(
+                self.pos.x + delta_s*np.cos(self.pos.yaw), 
+                self.pos.y+delta_s*np.sin(self.pos.yaw),
+                self.pos.yaw+self.curvature * delta_s
+                )
+        return TrafficAgent(pos=pos, speed=speed, curvature=self.curvature,width=self.width,length_front=self.length_front,length_rear=self.length_rear)
     def step(self, a_cmd: float, dt: float, cur_cmd: float = 0.0) -> None:
         """
         仿真步进。

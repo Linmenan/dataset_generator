@@ -62,4 +62,15 @@ def is_collision(agent1: TrafficAgent,
                          _project(poly2, axis),
                          margin=margin):
             return False      # 找到分离轴 => 无碰撞
-    return True              
+    return True
+
+def will_collision(agent1: TrafficAgent,
+                 agent2: TrafficAgent,
+                 pred_horizon: float = 2.0,
+                 margin: float = 0.0) -> bool:
+    t = 0.0
+    while t<=pred_horizon:
+        if is_collision(agent1=agent1.pred(dt=t),agent2=agent2.pred(dt=t),margin=margin):
+            return True
+        t+=0.5
+    return False

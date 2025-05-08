@@ -10,20 +10,26 @@ class DataRecorder:
             os.makedirs(save_path)
         self.data = {}
         self.current_line = {}
-
+        self.work_on = True
     def add_data(self, tab, name, value):
+        if not self.work_on:
+            return
         if tab not in self.data:
             self.data[tab] = []
             self.current_line[tab] = {}
         self.current_line[tab][name] = value
 
     def new_line(self):
+        if not self.work_on:
+            return
         for tab in self.data:
             line = self.current_line.get(tab, {})
             self.data[tab].append(line)
             self.current_line[tab] = {}
 
     def save(self):
+        if not self.work_on:
+            return
         now = datetime.now().strftime("%Y%m%d%H%M%S")
         file_path = os.path.join(self.save_path, f"{now}.xlsx")
         try:

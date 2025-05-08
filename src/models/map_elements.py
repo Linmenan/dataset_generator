@@ -28,9 +28,9 @@ class Signal:
         self.type = type
         self.s = s
         self.t = t
-        self.from_lane = from_lane
-        self.to_lane = to_lane
-        self.turn_relation = turn_relation
+        self.from_lane = str(from_lane)
+        self.to_lane = str(to_lane)
+        self.turn_relation = str(turn_relation) # Left 、Right 、Straight
 
 # 定义 ReferenceLine 类，用于保存参考线信息
 class ReferenceLine:
@@ -96,10 +96,12 @@ class Lane:
    
     def projection(self, pos: Point2D)-> Tuple[float, float, bool, Point2D, float]:
         """
-        根据输入点 `pos` 计算其沿车道中心线的累计里程 s (单位: 米)。
-        - 如果行驶方向为  forward / undirected  → 返回正值
-        - 如果行驶方向为  backward            → 返回负值
-        若无法投影（点在中心线延长线之外），返回 None。
+        根据输入点 `pos` 计算
+         s 路程
+         b 横向误差
+         is_out 车道范围外
+         projected_point 投影点
+         heading_at 投影点朝向
         """
         # 提取中心线点列表（Nx2 数组）
         pts = [np.array(pt_list[0], dtype=float) for pt_list in self.sampled_points]

@@ -1,7 +1,7 @@
 from ..models.agent import *
 from ..parsers.parsers import MapParser
 from ..models.map_elements import *
-from ..utils.collision_check import is_collision, will_collision
+from ..utils.collision_check import is_collision,will_collision
 
 import plotly.graph_objects as go
 import numpy as np
@@ -77,8 +77,7 @@ class SceneSimulator:
         self.right_of_way_map = {
             "Left": 1,
             "Right": 0,
-            "Straight": 2,
-            "": 0,
+            "Stright": 2,
         }
     # ----------- 公共查询接口 -----------
     @property
@@ -240,10 +239,10 @@ class SceneSimulator:
                 #更新当前道路和车道
                 if current_agent.remain_s < 0.1:
                     if current_lane.successor:
-                        # lane_map = ""
-                        # for lane in current_agent.road_map:
-                        #     lane_map+="R"+lane.belone_road.road_id+"L"+lane.lane_id+"->"
-                        # logging.info(f"agent {current_agent.id} map {lane_map}")
+                        lane_map = ""
+                        for lane in current_agent.road_map:
+                            lane_map+="R"+lane.belone_road.road_id+"L"+lane.lane_id+"->"
+                        logging.info(f"agent {current_agent.id} map {lane_map}")
                         
                         current_agent.current_road_index = current_agent.road_map[1].belone_road.road_id
                         current_agent.current_lane_index = current_agent.road_map[1].lane_id
@@ -343,7 +342,7 @@ class SceneSimulator:
     def get_lane_traffic_light(self, road_id: str, lane_id: str) -> Tuple[str,float,str]:
         road = self.get_road(road_id)
         lane = self.get_lane(road_id, lane_id)
-        light = ('grey',0.0,'')
+        light = ('grey',0.0)
         if road.junction != "-1":
                 if road.signals is not None:
                     for signal in road.signals:
@@ -415,29 +414,25 @@ class SceneSimulator:
         current_agent.nearerst_agent = None
         current_agent.min_distance = float('inf')
         #更新前方最近智能体
-        for check_agent in [self.ego_vehicle]+self.agents:
-            if check_agent.id == current_agent.id:
+        for agent in [self.ego_vehicle]+self.agents:
+            if agent.id == current_agent.id:
                 continue
             pred_length = 0.0
-            if current_agent.lane_change == (-1,-1):
-                for check_lane in current_agent.road_map:
-                    if (check_lane.unicode==check_agent.current_lane_unicode):
-                        agent_s,_,_,_,_ = check_lane.projection(check_agent.pos)
-                        if current_agent.current_lane_unicode==check_agent.current_lane_unicode:
-                            if agent_s > current_agent.current_s:
-                                delta_s = agent_s - current_agent.current_s
-                                if delta_s < current_agent.min_distance:
-                                    current_agent.min_distance = delta_s
-                                    current_agent.nearerst_agent = check_agent
-                        else:
-                            delta_s = pred_length + agent_s - current_agent.current_s
+            for check_lane in current_agent.road_map:
+                if (check_lane.unicode==agent.current_lane_unicode):
+                    agent_s,_,_,_,_ = check_lane.projection(agent.pos)
+                    if current_agent.current_lane_unicode==agent.current_lane_unicode:
+                        if agent_s > current_agent.current_s:
+                            delta_s = agent_s - current_agent.current_s
                             if delta_s < current_agent.min_distance:
                                 current_agent.min_distance = delta_s
-                                current_agent.nearerst_agent = check_agent
-                    pred_length+=check_lane.length
-            else:
-                # TODO 变道智能体注意力
-                pass
+                                current_agent.nearerst_agent = agent
+                    else:
+                        delta_s = pred_length + agent_s - current_agent.current_s
+                        if delta_s < current_agent.min_distance:
+                            current_agent.min_distance = delta_s
+                            current_agent.nearerst_agent = agent
+                pred_length+=check_lane.length
                 # if pred_length-current_s>30:
                 #     break
 
@@ -490,7 +485,7 @@ class SceneSimulator:
             pred_length = 0.0
             for check_lane in current_agent.road_map:
                 if check_lane.belone_road.junction!='-1':
-                    color, countdown, _ = self.get_lane_traffic_light(check_lane.belone_road.road_id, check_lane.lane_id)
+                    color,countdown,_ = self.get_lane_traffic_light(check_lane.belone_road.road_id, check_lane.lane_id)
                     lane_remain_s = pred_length-current_agent.current_s
                     signal_remain_s = lane_remain_s-current_agent.length_front-0.5
                     self.data_recorder.add_data(current_agent.id,'Signal',color)
