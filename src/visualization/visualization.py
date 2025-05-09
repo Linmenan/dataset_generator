@@ -72,8 +72,8 @@ class SimView(QtWidgets.QMainWindow):
         self.plot = self.canvas.addPlot()
         self.plot.setAspectLocked(True)
 
-        self.dock_plot = QtWidgets.QDockWidget("绘图区域", self)
-        self.dock_plot.setObjectName("绘图区域")
+        self.dock_plot = QtWidgets.QDockWidget("地图场景", self)
+        self.dock_plot.setObjectName("地图场景")
         self.dock_plot.setWidget(self.canvas)
         self.addDockWidget(QtCore.Qt.LeftDockWidgetArea, self.dock_plot)
         plot_action = self.dock_plot.toggleViewAction()  # 显式获取动作
@@ -112,7 +112,7 @@ class SimView(QtWidgets.QMainWindow):
         # ========================
         # 1.3 数据曲线（右下）
         # ========================
-        self.data_plot_widget = pg.PlotWidget(title="仿真数据曲线")
+        self.data_plot_widget = pg.PlotWidget(title="")
         self.data_plot_widget.showGrid(x=True, y=True, alpha=0.2)
         self.data_plot_widget.setBackground((240, 240, 240, 255))  # 浅灰背景
         self.legend = self.data_plot_widget.addLegend(offset=(500, 20))

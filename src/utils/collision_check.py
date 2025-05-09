@@ -1,5 +1,6 @@
 from ..models.agent import TrafficAgent
 import numpy as np
+import math
 from typing import Tuple
 
 def _box_corners(agent: TrafficAgent) -> np.ndarray:
@@ -74,3 +75,7 @@ def will_collision(agent1: TrafficAgent,
             return True
         t+=0.5
     return False
+
+def distance_between(agent1: TrafficAgent,
+                 agent2: TrafficAgent)->float:
+    return math.sqrt((agent1.pos.x-agent2.pos.x)**2+(agent1.pos.y-agent2.pos.y)**2)

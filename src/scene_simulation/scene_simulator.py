@@ -1,7 +1,7 @@
 from ..models.agent import *
 from ..parsers.parsers import MapParser
 from ..models.map_elements import *
-from ..utils.collision_check import is_collision, will_collision
+from ..utils.collision_check import is_collision, will_collision, distance_between
 
 import plotly.graph_objects as go
 import numpy as np
@@ -167,6 +167,7 @@ class SceneSimulator:
                         self.ego_vehicle.current_lane_unicode = lane.unicode
 
     def generate_traffic_agents(self, number = 0):
+        count = 0
         while len(self.agents) < number:   
             k = random.choice(list(self.map_parser.roads))
             road = self.map_parser.roads[k]
@@ -194,6 +195,10 @@ class SceneSimulator:
                         traffic_agent.current_lane_index = lane.lane_id
                         traffic_agent.current_lane_unicode = lane.unicode
                         self.agents.append(traffic_agent) 
+            count+=1
+            if count>10000:
+                logging.warning(f"已尝试{count}次，生成智能体{len(self.agents)}/{number},未找到合适位置放置其余{number-len(self.agents)}个车辆，请检查地图文件")
+                break
 
     def update_states(self)->None:
             clear_output(wait=True)
@@ -399,6 +404,9 @@ class SceneSimulator:
                     pd_l = current_agent.remain_s
 
         while pd_l<100:
+            if not hold_lane.successor:
+                logging.warning(f"Agent {current_agent.id} 道路规划到断头路！")
+                break
             hold_lane_id = random.randrange(len(hold_lane.successor))
             hold_lane = self.get_lane(hold_lane.successor[hold_lane_id][0],hold_lane.successor[hold_lane_id][1])
             current_agent.road_map.append(hold_lane)
@@ -436,8 +444,20 @@ class SceneSimulator:
                                 current_agent.nearerst_agent = check_agent
                     pred_length+=check_lane.length
             else:
-                # TODO 变道智能体注意力
-                pass
+                # 变道智能体注意力
+                if distance_between(current_agent,check_agent)<20 and will_collision(current_agent,check_agent,pred_horizon=3,margin=0.5):
+                    current_agent.nearerst_agent = check_agent
+                    s,_,_,_,_ = self.map_parser.lanes[current_agent.current_lane_unicode].projection(check_agent.pos)
+                    dis = s-current_agent.current_s
+                    if dis>=-10 and dis<10: # 车侧无法变道
+                        current_agent.min_distance = 0
+                        current_agent.nearerst_agent = check_agent
+                    elif dis>=10: # 车前，变道跟行
+                        current_agent.min_distance = dis
+                        current_agent.nearerst_agent = check_agent
+                    else:         # 车后，插队变道
+                        check_agent.min_distance = -dis
+                        check_agent.nearerst_agent = current_agent
                 # if pred_length-current_s>30:
                 #     break
 
@@ -472,7 +492,7 @@ class SceneSimulator:
                 acc_in_junc = self.compute_acceleration(self.cruising_speed, current_v)
             else:
                 acc_in_junc = self.compute_acceleration(self.crossing_speed, current_v)
-                #TODO 增加有信号灯控制路口路权让行机制
+                # 增加有信号灯控制路口路权让行机制
                 for check_agent in [self.ego_vehicle]+self.agents:
                     if check_agent.id <= current_agent.id:
                         continue
@@ -540,7 +560,7 @@ class SceneSimulator:
                     acc_cmd = min(acc_cmd, acc_in_road1)
                     break
             else:
-                logging.debug("\t前方无路")
+                logging.warning(f"\tAgent {current_agent.id} 前方无路!")
                 acc_cmd = min(acc_cmd, current_agent.a_min)
         
         acc_cmd = min(max(acc_cmd,current_agent.a_min),current_agent.a_max)
@@ -553,7 +573,7 @@ class SceneSimulator:
         curvature_cmd = self.pure_pursuit_curvature(
                         pose=current_agent.pos,
                         path=ref_line,
-                        lookahead=5.0
+                        lookahead=5.0 if current_agent.lane_change == (-1,-1) else 10.0
                     )
         if current_agent.id == "0":
             self.view.add_temp_path(ref_line,color="c",line_width=8,alpha=0.2,z_value=0)
