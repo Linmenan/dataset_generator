@@ -1,5 +1,6 @@
 import numpy as np
 from typing import List, Tuple
+from ..utils.common import normalize_angle
 class Point2D:
     def __init__(self, x, y) -> None:
         self.x = x
@@ -9,7 +10,7 @@ class Pose2D(Point2D):
     def __init__(self, x, y, yaw) -> None:
         self.x = x
         self.y = y
-        self.yaw = yaw
+        self.yaw = normalize_angle(yaw)
 
 class Control:
     def __init__(self, id , type) -> None:

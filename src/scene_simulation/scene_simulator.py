@@ -13,7 +13,7 @@ import math
 from datetime import datetime
 from typing import Callable, Awaitable, Optional, List
 
-from pyqtgraph.Qt import QtWidgets
+from pyqtgraph.Qt import QtWidgets, QtCore, QtGui
 from ..visualization.visualization import SimView
 from ..utils.data_recorder import DataRecorder
 from IPython.display import clear_output
@@ -22,9 +22,13 @@ from ..motion.agent_motion import LateralMPC_NL
 from ..utils.color_print import RED,RESET,GREEN,YELLOW,BLUE,CYAN,MAGENTA
 from ..utils.common import normalize_angle
 
+from collections import OrderedDict   # 放在其他 import 之后
+
 class Mode(enum.Enum):   # enum 支持位运算 :contentReference[oaicite:0]{index=0}
     SYNC = "sync"
     ASYNC = "async"
+    REPLAY  = "replay"
+
 class SceneSimulator:
     def __init__(
             self, 
@@ -67,11 +71,17 @@ class SceneSimulator:
         self.ego_vehicle = None
         self.agents = []
         self.map_parser = MapParser(file_path=map_file_path,yaml_path=yaml_path)
+
+        # ---------- UI ----------
         self.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-        self.data_recorder = DataRecorder(data_path)
         # 创建并 show 视图
         self.view = SimView(self, size=window_size)
         self.view.show()
+        
+        # ---------- 数据记录器 ----------
+        self.data_recorder = DataRecorder(data_path)
+        
+        # ---------- 日志 ----------
         logging.debug("simulator init")
 
         self.right_of_way_map = {
@@ -80,6 +90,20 @@ class SceneSimulator:
             "Straight": 2,
             "": 0,
         }
+
+        # ---------- 回放相关 ----------
+        self._replay_ready   = False     # 是否加载了回放文件
+        self._replay_data    = {}        # {agent_id: {col: list}}
+        self._replay_frames  = 1
+        self._replay_index   = 0
+        self._replay_dt      = 0.05      # 默认 20 Hz，可由文件推断
+        self._replay_ids     = []        # agent 顺序
+        self._replay_agents  = OrderedDict()  # 便于稳定迭代顺序
+        self.replay_speed = 1.0        # 当前倍速
+        self._vis_dt      = 1 / 30.0     # 可视化 30 fps   (自己喜欢可调)
+        self._replay_speed_accum  = 0.0        # ← 新增：小数倍速累加器
+        self._vis_next_ts = 0.0          # 下次应渲染到的 sim_time
+
     # ----------- 公共查询接口 -----------
     @property
     def sim_time(self) -> float:
@@ -98,14 +122,56 @@ class SceneSimulator:
 
     # ----------- 主循环 (同步) -----------
     def step_once(self):
-        """外部驱动一次步进 (同步模式用)"""
+        """外部驱动一次步进；根据运行模式调用不同逻辑"""
+        if self.mode is Mode.REPLAY:
+            self._replay_step_once()
+            return
+
+        # ---------- 原同步逻辑保持不变 ----------
         self._sim_time += self.step
         self.sim_frame += 1
-        #  zzzzzz
         self.update_states()
-        if self.sim_frame%self.plot_step == 0:
+        if self.sim_frame % self.plot_step == 0:
             self.view.update()
-                 
+
+    def _replay_step_once(self):
+        """回放模式推进一帧。到尾帧后自动停止计时器 / 循环。"""
+        if not self._replay_ready:
+            return
+        # A) 计算本 tick 应推进的帧数
+        self._replay_speed_accum += self.replay_speed          # 累加倍速
+        step = int(self._replay_speed_accum)                   # 取整数前进帧数
+        if step == 0:                                          # <0.5× 等情况
+            return
+        self._replay_speed_accum -= step                       # 剩余小数留待下次
+
+        # B) 若剩余帧不足，直接到末帧并暂停
+        if self._replay_index + step >= self._replay_frames:
+            self._replay_index = self._replay_frames - 1
+            self._apply_replay_frame(self._replay_index)
+            self.view.update()
+            self._timer.stop()
+            self.view.replay_finished()
+            return
+
+        # C) 正常推进 step 帧（不刷新 UI）
+        for _ in range(step):
+            self._replay_index += 1
+            self._apply_replay_frame(self._replay_index)
+
+        # D) 每 plot_step 帧刷新一次 UI
+        if self._replay_index % self.plot_step == 0:
+            self.view.update()
+
+    def _apply_replay_frame(self, i: int):
+        """把所有智能体更新到第 i 帧，但不触发 view.update()"""
+        for aid, ag in self._replay_agents.items():
+            row = self._replay_data[aid]
+            ag.pos.x, ag.pos.y, ag.pos.yaw = row["PosX"][i], row["PosY"][i], row["Yaw"][i]
+            ag.speed = row.get("Speed", [0]*self._replay_frames)[i]
+        self._sim_time = self._replay_data[self.ego_vehicle.id]["SimTime"][i]
+
+
     # ----------- 主循环 (异步) -----------
     async def _run_async(self):
         self._start_wall = time.perf_counter()
@@ -121,21 +187,27 @@ class SceneSimulator:
 
     # ----------- 启动 / 停止 -----------
     def start(self):
-        if self.mode is Mode.SYNC:
-            # 同步模式只记录起始时间，交由外部循环调用 step_once()
-            self._start_wall = time.perf_counter()
+        if self.mode is Mode.REPLAY:
+            if not self._replay_ready:
+                raise RuntimeError("需先调用 load_replay")
+            self._timer = QtCore.QTimer()
+            self._timer.setInterval(int(self._vis_dt * 1000))  # 固定 30 fps
+            self._timer.timeout.connect(self.step_once)
+            # self._timer.start() #不自动播放
+            self.app.exec_()
+        elif self.mode is Mode.SYNC:
             self._running = True
-        else:
-            # 异步：独占事件循环
+        else:            # ASYNC
             asyncio.run(self._run_async())
-            # self._loop = asyncio.new_event_loop()          # :contentReference[oaicite:4]{index=4}
-            # asyncio.run_coroutine_threadsafe(
-            #     self._run_async(), self._loop)
+
 
     def stop(self):
         self._running = False
+        if hasattr(self, "_timer"):
+            self._timer.stop()
+            del self._timer
         if self._loop and self._loop.is_running():
-            self._loop.call_soon_threadsafe(self._loop.stop)
+            self._loop.call_soon_threadsafe(self._loop.stop())
 
     def init_ego_vehicle(self):
         while self.ego_vehicle == None: 
@@ -205,7 +277,13 @@ class SceneSimulator:
             self.view.clear_temp_paths()
 
             for current_agent in [self.ego_vehicle]+self.agents:
-                self.data_recorder.add_data(current_agent.id,'sim_time',self.sim_time)
+                self.data_recorder.add_data(current_agent.id,'SimTime',self.sim_time)
+                self.data_recorder.add_data(current_agent.id,'PosX',current_agent.pos.x)
+                self.data_recorder.add_data(current_agent.id,'PosY',current_agent.pos.y)
+                self.data_recorder.add_data(current_agent.id,'Yaw',current_agent.pos.yaw)
+                self.data_recorder.add_data(current_agent.id,'LengthFront',current_agent.length_front)
+                self.data_recorder.add_data(current_agent.id,'LengthRear',current_agent.length_rear)
+                self.data_recorder.add_data(current_agent.id,'Width',current_agent.width)
 
                 road_id = current_agent.current_road_index
                 lane_id = current_agent.current_lane_index
@@ -237,6 +315,7 @@ class SceneSimulator:
                 self.data_recorder.add_data(current_agent.id,'CurCmd',curvature_cmd)
 
                 current_agent.step(a_cmd = acc_cmd, cur_cmd = curvature_cmd, dt = self.step)
+                
                 if current_agent.id=="0":
                     self.view.add_data("ego_velocity (m/s)", self.sim_time, current_agent.speed)
                     self.view.add_data("ego_cte (m)", self.sim_time, current_b)
@@ -257,11 +336,6 @@ class SceneSimulator:
                         current_agent.road_map = current_agent.road_map[1:]
                         current_agent.ref_line = current_agent.ref_line[1:]
                         current_agent.plan_haul = current_agent.plan_haul[1:]
-
-    def get_road(self, road_index:str)->Road:
-        for road in self.map_parser.roads.values():
-            if road.road_id == road_index:
-                return road
 
     def get_lane(self, road_index:str, lane_index:str)->Lane:
         for road in self.map_parser.roads.values():
@@ -345,9 +419,9 @@ class SceneSimulator:
 
         return curvature
 
-    def get_lane_traffic_light(self, road_id: str, lane_id: str) -> Tuple[str,float,str]:
-        road = self.get_road(road_id)
-        lane = self.get_lane(road_id, lane_id)
+    def get_lane_traffic_light(self, lane_unicode: str) -> Tuple[str,float,str]:
+        lane = self.map_parser.lanes[lane_unicode]
+        road = lane.belone_road
         light = ('grey',0.0,'')
         if road.junction != "-1":
                 if road.signals is not None:
@@ -445,7 +519,7 @@ class SceneSimulator:
                     pred_length+=check_lane.length
             else:
                 # 变道智能体注意力
-                if distance_between(current_agent,check_agent)<20 and will_collision(current_agent,check_agent,pred_horizon=3,margin=0.5):
+                if distance_between(current_agent,check_agent)<20 and will_collision(current_agent,check_agent,pred_horizon=3,margin_w=0.5):
                     current_agent.nearerst_agent = check_agent
                     s,_,_,_,_ = self.map_parser.lanes[current_agent.current_lane_unicode].projection(check_agent.pos)
                     dis = s-current_agent.current_s
@@ -487,7 +561,9 @@ class SceneSimulator:
         if road.junction != "-1":
             logging.debug(f"\t当前在路口,前方道路type:{road.successor[0]}")
             current_lane = self.map_parser.lanes[current_agent.current_lane_unicode]
-            color,countdown,turn_rlation = self.get_lane_traffic_light(current_lane.belone_road.road_id, current_lane.lane_id)
+            color,countdown,turn_rlation = self.get_lane_traffic_light(current_lane.unicode)
+            current_agent.way_right_level = self.right_of_way_map[turn_rlation]
+
             if color=='grey':
                 acc_in_junc = self.compute_acceleration(self.cruising_speed, current_v)
             else:
@@ -498,19 +574,21 @@ class SceneSimulator:
                         continue
                     if self.map_parser.lanes[check_agent.current_lane_unicode].belone_road.junction==road.junction:
                         if will_collision(current_agent,check_agent):
+                            _,_,turn_rlation = self.get_lane_traffic_light(check_agent.current_lane_unicode)
+                            check_agent.way_right_level = self.right_of_way_map[turn_rlation]
                             if check_agent.way_right_level>=current_agent.way_right_level:
                                 acc_in_junc = current_agent.a_min
             self.data_recorder.add_data(current_agent.id,'JunctionAcc',acc_in_junc)
+            self.data_recorder.add_data(current_agent.id,'WayRightLevel',current_agent.way_right_level)
             logging.debug(f"\t路口acc:{acc_in_junc:.3f}")
             acc_cmd = min(acc_cmd, acc_in_junc)
-            current_agent.way_right_level = self.right_of_way_map[turn_rlation]
             
         else:
 
             pred_length = 0.0
             for check_lane in current_agent.road_map:
                 if check_lane.belone_road.junction!='-1':
-                    color, countdown, _ = self.get_lane_traffic_light(check_lane.belone_road.road_id, check_lane.lane_id)
+                    color, countdown, _ = self.get_lane_traffic_light(check_lane.unicode)
                     lane_remain_s = pred_length-current_agent.current_s
                     signal_remain_s = lane_remain_s-current_agent.length_front-0.5
                     self.data_recorder.add_data(current_agent.id,'Signal',color)
@@ -593,6 +671,7 @@ class SceneSimulator:
         #     )
         if current_agent.lane_change != (-1,-1):
             target_lane = self.map_parser.lanes[current_agent.lane_change[1]]
+            self.data_recorder.add_data(current_agent.id,'ChangingLaneTo',target_lane.belone_road.road_id+"_"+target_lane.lane_id)
             _,_,is_out,_,_ = target_lane.projection(current_agent.pos)
             if not is_out:
                 current_agent.current_lane_index = target_lane.lane_id
@@ -601,4 +680,63 @@ class SceneSimulator:
                 current_agent.lane_change = (-1,-1)
         return curvature_cmd
 
+    ### <<< 新增 >>>
+    def load_replay(self, file_name: str, fps: float = None) -> bool:
+        """
+        读取 Excel 录制文件并进入 REPLAY 模式。
+        file_name  只需文件名，路径由构造函数里传入的 data_path 决定
+        fps        指定帧率；None 时按 SimTime 差分估算
+        """
+        ok, agents_dict = self.data_recorder.load(file_name)
+        if not ok:
+            logging.error("Replay 文件读取失败")
+            return False
+
+        self.mode = Mode.REPLAY
+        self._replay_data   = agents_dict
+        self._replay_ids    = sorted(agents_dict.keys(), key=int)
+        self._replay_frames = len(agents_dict[self._replay_ids[0]]["SimTime"])
+        self._replay_index  = 0
+
+        self._replay_dt     = 1.0 / fps if fps else max(1e-3,
+                           agents_dict[next(iter(agents_dict))]["SimTime"][1] -
+                           agents_dict[next(iter(agents_dict))]["SimTime"][0])
+
+        # 创建静态 TrafficAgent 对象池
+        self._replay_agents.clear()
+        for aid in self._replay_ids:
+            d = agents_dict[aid]
+            ag = TrafficAgent(
+                id   = aid,
+                pos  = Pose2D(d["PosX"][0], d["PosY"][0], d["Yaw"][0]),
+                length_front = d.get("LengthFront", [1.5])[0],
+                length_rear  = d.get("LengthRear",  [1.5])[0],
+                width        = d.get("Width",       [0.6])[0],
+                speed        = d.get("Speed",       [0.0])[0],
+            )
+            self._replay_agents[aid] = ag
+
+        # 指定 ego & agents 引用，让 SimView 能拿到
+        ego_id = "0" if "0" in self._replay_agents else self._replay_ids[0]
+        self.ego_vehicle = self._replay_agents[ego_id]
+        self.agents      = [a for a in self._replay_agents.values() if a.id != ego_id]
+
+        self._replay_ready = True
+        # ===== 新增：预渲染第 0 帧 =====
+        self._replay_index = 0
+        self._apply_replay_frame(0)   # 把状态切到首帧
+        if hasattr(self, "view") and hasattr(self.view, "update"):
+            self.view.update()     # 立即刷新画面
+        # 通知可视化更新进度条
+        if hasattr(self, "view") and hasattr(self.view, "update_replay_slider"):
+            self.view.update_replay_slider()
+        
+        logging.info(f"Replay 模式载入成功：{len(self._replay_ids)} 个智能体，{self._replay_frames} 帧")
+
+        return True
     
+    # === 新增：修改回放倍速接口 ===
+    def set_replay_speed(self, speed: float):
+        """回放模式修改倍速"""
+        self.replay_speed = max(0.01, speed)
+    # --------------------------------------------------

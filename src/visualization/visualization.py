@@ -8,9 +8,7 @@ from pyqtgraph import TextItem
 from ..models.agent import TrafficAgent
 from ..models.map_elements import Point2D
 
-import networkx as nx
-import plotly.graph_objects as go
-import random
+
 
 # 常见论文颜色（Tableau 10 + Set1）
 PAPER_COLORS = [
@@ -112,31 +110,12 @@ class SimView(QtWidgets.QMainWindow):
         # ========================
         # 1.3 数据曲线（右下）
         # ========================
-        self.data_plot_widget = pg.PlotWidget(title="")
-        self.data_plot_widget.showGrid(x=True, y=True, alpha=0.2)
-        self.data_plot_widget.setBackground((240, 240, 240, 255))  # 浅灰背景
-        self.legend = self.data_plot_widget.addLegend(offset=(500, 20))
-        self.data_plot_widget.setLabel('left', 'Value')
-        self.data_plot_widget.setLabel('bottom', 'Time', 's')
-
-        self.data_lines = {}
-        self.color_idx = 0  # 颜色循环索引
-        self.style_idx = 0  # 线型循环索引
-
-        self.dock_curve = QtWidgets.QDockWidget("数据曲线", self)
-        self.dock_curve.setObjectName("数据曲线")
-        self.dock_curve.setWidget(self.data_plot_widget)
-        self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.dock_curve)  # 暂时放右边
+        from ..scene_simulation.scene_simulator import Mode   # 防循环引用
+        if self.sim.mode in (Mode.SYNC, Mode.ASYNC):          # ← 只有实时仿真才建曲线窗
+            self._init_curve_dock(view_menu)
+        else:                                                 # ← REPLAY：把控件放这里
+            self._init_replay_controls(QtCore.Qt.RightDockWidgetArea, view_menu)
         
-        self.splitDockWidget(self.dock_info, self.dock_curve, QtCore.Qt.Vertical)  # 将其垂直放在 info 下方
-        curve_action = self.dock_curve.toggleViewAction()  # 显式获取动作
-        view_menu.addAction(curve_action)
-        self.dock_curve.setFeatures(
-            QtWidgets.QDockWidget.DockWidgetClosable | 
-            QtWidgets.QDockWidget.DockWidgetMovable | 
-            QtWidgets.QDockWidget.DockWidgetFloatable
-            )
-        self.resizeDocks([self.dock_plot, self.dock_info], [700, 300], QtCore.Qt.Horizontal)
         # ========================
         # 可视化内容
         # ========================
@@ -155,8 +134,61 @@ class SimView(QtWidgets.QMainWindow):
         }
 
         self._init_lanes()
+        # === 仅回放模式才绘制控制栏 ===
+        if self.sim.mode is Mode.REPLAY:
+            self.update_replay_slider()
 
-        
+    def _init_curve_dock(self, menu):
+        self.data_plot_widget = pg.PlotWidget(title="")
+        self.data_plot_widget.showGrid(x=True, y=True, alpha=0.2)
+        self.data_plot_widget.setBackground((240, 240, 240, 255))
+        self.legend = self.data_plot_widget.addLegend(offset=(500, 20))
+        self.data_plot_widget.setLabel("left",   "Value")
+        self.data_plot_widget.setLabel("bottom", "Time", "s")
+        self.data_lines, self.color_idx, self.style_idx = {}, 0, 0
+
+        self.dock_curve = QtWidgets.QDockWidget("数据曲线", self)
+        self.dock_curve.setWidget(self.data_plot_widget)
+        self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.dock_curve)
+        self.splitDockWidget(self.dock_info, self.dock_curve, QtCore.Qt.Vertical)
+        menu.addAction(self.dock_curve.toggleViewAction())
+
+    def _init_replay_controls(self, area, menu):
+        self.ctrl_dock = QtWidgets.QDockWidget("播放控制", self)
+        self.addDockWidget(area, self.ctrl_dock)
+        menu.addAction(self.ctrl_dock.toggleViewAction())
+
+        w = QtWidgets.QWidget(); self.ctrl_dock.setWidget(w)
+        h = QtWidgets.QHBoxLayout(w); h.setContentsMargins(6, 4, 6, 4)
+
+        # 按钮 / 进度条 / 倍速
+        self.btn_prev = QtWidgets.QPushButton("⏮")
+        self.btn_play = QtWidgets.QPushButton()          # 文本稍后根据状态再设
+        self.btn_next = QtWidgets.QPushButton("⏭")
+        self.sld_prog = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.sld_prog.setMinimum(0)
+        self.sld_prog.setMaximum(max(1, getattr(self.sim, "_replay_frames", 1)) - 1)
+        self.cmb_speed = QtWidgets.QComboBox()
+        self.cmb_speed.addItems(["0.1×", "0.5×", "1.0×", "1.25×", "1.5×", "2.0×", "5.0×", "10.0×"])
+        self.cmb_speed.setCurrentIndex(2)
+
+        for wgt in (self.btn_prev, self.btn_play, self.btn_next,
+                    self.sld_prog, self.cmb_speed):
+            h.addWidget(wgt)
+
+        # ——— 根据 SceneSimulator 的计时器状态来设定 _playing 和按钮文本 ———
+        timer_active = bool(getattr(self.sim, "_timer", None) and self.sim._timer.isActive())
+        self._playing = timer_active
+        self.btn_play.setText("❚❚" if timer_active else "▶")
+
+        # 信号
+        self.btn_prev.clicked.connect(lambda: self._seek_delta(-1))
+        self.btn_next.clicked.connect(lambda: self._seek_delta(1))
+        self.btn_play.clicked.connect(self._toggle_play)
+        self.sld_prog.valueChanged.connect(self._seek_abs)
+        self.cmb_speed.currentIndexChanged.connect(self._speed_changed)
+
+
     def add_temp_path(
         self,
         path_points: List[Point2D],
@@ -245,7 +277,7 @@ class SimView(QtWidgets.QMainWindow):
 
                 curve_c = self.plot.plot(centers[:, 0], centers[:, 1],
                                          pen=pg.mkPen('grey', width=0.1, style=QtCore.Qt.DashLine))
-                self.lane_curves[(road.road_id, lane.lane_id, 'c', lane_change)] = curve_c
+                self.lane_curves[(road.road_id, lane.lane_id, lane.unicode, 'c', lane_change)] = curve_c
 
                 mid_x, mid_y = centers[0]
                 txt = TextItem('', color='black', anchor=(0.0, 0.0))
@@ -256,11 +288,11 @@ class SimView(QtWidgets.QMainWindow):
 
                 curve_l = self.plot.plot(offset_lefts[:, 0], offset_lefts[:, 1],
                                          pen=pg.mkPen('grey', width=1, style=l_style))
-                self.lane_curves[(road.road_id, lane.lane_id, 'l', lane_change)] = curve_l
+                self.lane_curves[(road.road_id, lane.lane_id, lane.unicode, 'l', lane_change)] = curve_l
 
                 curve_r = self.plot.plot(offset_rights[:, 0], offset_rights[:, 1],
                                          pen=pg.mkPen('grey', width=1, style=r_style))
-                self.lane_curves[(road.road_id, lane.lane_id, 'r', lane_change)] = curve_r
+                self.lane_curves[(road.road_id, lane.lane_id, lane.unicode, 'r', lane_change)] = curve_r
     
     def add_data(self, dataname:str, x:float, y:float)->None:
         if dataname not in self.data_lines:
@@ -272,17 +304,15 @@ class SimView(QtWidgets.QMainWindow):
         """每步仿真后调用：更新车道颜色 & 智能体安全盒。"""
         # 1) 车道颜色
         # ---------- 1)  车道信号 ----------
-        for (rid, lid, kind, lane_change), curve in self.lane_curves.items():
-            
-
-            road = self.sim.get_road(rid)
+        for (rid, lid, unicode, kind, lane_change), curve in self.lane_curves.items():
+            road = self.sim.map_parser.lanes[unicode].belone_road
             if road.junction == "-1":      # 没有信号控制
                 # curve.setPen(pg.mkPen('grey', width=1, style=QtCore.Qt.DashLine))
                 self.lane_countdowns[(rid, lid)].setText('')   # 清空数字
                 continue
 
             # 有信号灯
-            color, countdown, _ = self.sim.get_lane_traffic_light(rid, lid)
+            color, countdown, _ = self.sim.get_lane_traffic_light(unicode)
             if color!='grey':
                 if kind == 'c':      # 中心线
                     # curve.setPen(pg.mkPen('grey', width=0.1)) 
@@ -364,259 +394,138 @@ class SimView(QtWidgets.QMainWindow):
             f"Ego: (x: {ego.pos.x:.2f} m, y: {ego.pos.y:.2f} m, yaw: {ego.pos.yaw / math.pi * 180:.1f} deg)\n"
             f"speed: {ego.speed:.1f} m/s"
         )
+        from ..scene_simulation.scene_simulator import Mode
+        if self.sim.mode in (Mode.SYNC, Mode.ASYNC):
+            # 更新所有已注册数据曲线
+            for name in list(self.data_lines.keys()):  # 使用list避免字典修改异常
+                data = self.data_lines[name]
+                # 自动创建曲线（如果未初始化）
+                if "curve" not in data:
+                    # 自动分配颜色和线型
+                    color = PAPER_COLORS[self.color_idx % len(PAPER_COLORS)]
+                    style = LINE_STYLES[self.style_idx % len(LINE_STYLES)]
+                    self.color_idx += 1
+                    self.style_idx += 1
 
-        # 更新所有已注册数据曲线
-        for name in list(self.data_lines.keys()):  # 使用list避免字典修改异常
-            data = self.data_lines[name]
-            # 自动创建曲线（如果未初始化）
-            if "curve" not in data:
-                # 自动分配颜色和线型
-                color = PAPER_COLORS[self.color_idx % len(PAPER_COLORS)]
-                style = LINE_STYLES[self.style_idx % len(LINE_STYLES)]
-                self.color_idx += 1
-                self.style_idx += 1
-
-                # 创建曲线对象
-                pen = pg.mkPen(color=color, width=2, style=style)
-                curve = self.data_plot_widget.plot([], [], name=name, pen=pen)
-                data["curve"] = curve
-                data["color"] = color
-                data["style"] = style
-
-
-            data["curve"].setData(data["x"], data["y"])
+                    # 创建曲线对象
+                    pen = pg.mkPen(color=color, width=2, style=style)
+                    curve = self.data_plot_widget.plot([], [], name=name, pen=pen)
+                    data["curve"] = curve
+                    data["color"] = color
+                    data["style"] = style
 
 
-        # 设置时间轴范围（最近10秒）
-        window_width = 10.0
-        start_time = max(0.0, t - window_width) if t is not None else 0.0
-        end_time = max(window_width, t) if t is not None else window_width
-        self.data_plot_widget.setXRange(start_time, end_time, padding=0)
+                data["curve"].setData(data["x"], data["y"])
 
 
-def build_topology_graph_lanes(roads):
-    """
-    构建 lane 级别的拓扑图：
-      - 节点为每个包含采样点的 Lane，节点ID 格式为 "roadID_laneID"；
-      - 节点位置为 Lane 采样点列表中位于中点处的点；
-      - 边基于 Lane.predecessor 和 Lane.successor 建立：
-          如果当前 Lane 的 predecessor 非 None，则认为其目标 Lane 位于所属 Road 的前驱 Road 中，
-          即构造新键为 (road.predecessor[1], lane.predecessor)；
-          同理，successor 使用 (road.successor[1], lane.successor)；
-      - 附带属性：road_id, lane_id, lane_type, junction.
-    """
-    G = nx.DiGraph()
-    # 添加 Lane 节点；节点ID 以 "roadID_lane_laneID" 命名
-    for road in roads.values():
-        for lane in road.lanes:
-            if not lane.sampled_points:
-                continue
-   
-            pos = lane.midpoint
-            node_id = f"{road.road_id}_lane_{lane.lane_id}"
-            # 保存所属 road 的 junction 信息（用于后续着色）
-            G.add_node(node_id, pos=pos, road_id=road.road_id, lane_id=lane.lane_id,
-                       lane_type=lane.lane_type, junction=road.junction)
-    
-    # 构建辅助字典，key 为 (road_id, lane_id)，value 为节点ID
-    lane_node_dict = {}
-    for road in roads.values():
-        for lane in road.lanes:
-            if not lane.sampled_points:
-                continue
-            node_id = f"{road.road_id}_lane_{lane.lane_id}"
-            lane_node_dict[(road.road_id, lane.lane_id)] = node_id
-    # print(f"lane_node_dict{lane_node_dict}")
-    # 添加边：检查每个 Lane 的 predecessor 和 successor
-    for road in roads.values():
-        for lane in road.lanes:
-            # print(f"road{road.road_id} lane{lane.lane_id}")
-            if not lane.sampled_points:
-                continue
-            current_node = lane_node_dict.get((road.road_id, lane.lane_id))
-            if not current_node:
-                continue
-
-            # 处理 predecessor
-            if lane.predecessor is not None:
-                for pred in lane.predecessor:
-                    if road.predecessor is not None:
-                        if pred in lane_node_dict:
-                            pred_node = lane_node_dict[pred]
-                            pos1 = np.array(G.nodes[pred_node]['pos'])
-                            pos2 = np.array(G.nodes[current_node]['pos'])
-                            weight = 0
-                            # print(f"添加前续边 from {pred_node} to {current_node}")
-                            G.add_edge(pred_node, current_node, weight=weight)
-
-            # 处理 successor
-            if lane.successor is not None:
-                for succ in lane.successor:
-                    if road.successor is not None:
-                        if succ in lane_node_dict:
-                            succ_node = lane_node_dict[succ]
-                            pos1 = np.array(G.nodes[current_node]['pos'])
-                            pos2 = np.array(G.nodes[succ_node]['pos'])
-                            weight = 0
-                            # print(f"添加后继边 from {current_node} to {succ_node}")
-                            G.add_edge(current_node, succ_node, weight=weight)
-    return G
-
-def build_topology_graph_roads(roads):
-    """
-    构建 Road 级别的拓扑图，然后将所有 junction != "-1" 的 Road 节点合并为 aggregated 节点。
-    
-    具体步骤：
-      1. 构建 Road 节点，其位置取 Road.midpoint，边根据 predecessor/successor 关系构建，
-         权重为两节点的欧氏距离；
-      2. 将所有 junction != "-1" 的 Road 节点分组，每组生成一个 aggregated 节点，
-         该节点位置取组内所有节点的中点平均值，并重构与外部节点的边关系；
-         
-    返回：合并后的 networkx.DiGraph 图。
-    """
-    # 构建 Road 拓扑图
-    G = nx.DiGraph()
-    for road in roads.values():
-        # 仅当 road 内存在 driving 车道时才加入图中
-        if not road.lanes:
-            continue
-        is_junction_road = (road.junction != "-1")
-        G.add_node(road.road_id,
-                   pos=road.midpoint,
-                   junction=road.junction,
-                   road_id=road.road_id,
-                   is_junction_road=is_junction_road)
-    # 添加边：基于 predecessor/successor 关系
-    for road in roads.values():
-        if road.road_id not in G.nodes:
-            continue
-        pred = road.predecessor
-        succ = road.successor
-        if pred is not None:
-            etype, eid = pred
-            if etype == "road" and eid in G.nodes:
-                pos1 = np.array(G.nodes[eid]['pos'])
-                pos2 = np.array(G.nodes[road.road_id]['pos'])
-                weight = 0
-                G.add_edge(eid, road.road_id, weight=weight)
-        if succ is not None:
-            etype, eid, cp = succ
-            if etype == "road" and eid in G.nodes:
-                pos1 = np.array(G.nodes[road.road_id]['pos'])
-                pos2 = np.array(G.nodes[eid]['pos'])
-                weight = 0
-                G.add_edge(road.road_id, eid, weight=weight)
-    
-    # 简化图：合并所有 junction != "-1" 的 Road 节点
-    groups = {}
-    for node, data in G.nodes(data=True):
-        junction = data.get("junction", "-1")
-        if junction != "-1":
-            groups.setdefault(junction, []).append(node)
-    
-    simplified_G = nx.DiGraph()
-    # 添加所有非 junction 节点（junction == "-1"）
-    non_group_nodes = [node for node, data in G.nodes(data=True) if data.get("junction", "-1") == "-1"]
-    for node in non_group_nodes:
-        simplified_G.add_node(node, **G.nodes[node])
-    # 添加非分组节点间的边
-    for u, v, d in G.edges(data=True):
-        if u in non_group_nodes and v in non_group_nodes:
-            simplified_G.add_edge(u, v, **d)
-    # 对每个 junction 分组生成 aggregated 节点
-    for junc, nodes in groups.items():
-        positions = [np.array(G.nodes[n]['pos']) for n in nodes if 'pos' in G.nodes[n]]
-        center = tuple(np.mean(positions, axis=0)) if positions else (0, 0)
-        agg_node = f"Junction_{junc}"
-        # 注意：aggregated 节点也使用橙色显示，junction 信息保留
-        simplified_G.add_node(agg_node, pos=center, junction=junc, is_junction_road=True)
-        # 对该组内的所有节点，将它们与外部的边重写到 aggregated 节点
-        for n in nodes:
-            for u, v, d in G.out_edges(n, data=True):
-                if v in nodes:
-                    continue
-                else:
-                    simplified_G.add_edge(agg_node, v, **d)
-            for u, v, d in G.in_edges(n, data=True):
-                if u in nodes:
-                    continue
-                else:
-                    simplified_G.add_edge(u, agg_node, **d)
-    return simplified_G
-
-def visualize_topology_combined(roads, detailed=True):
-    """
-    使用 Plotly 可视化拓扑图：
-      - detailed=True：显示每个 lane 的节点，节点位置为 lane 采样点的中点，
-                         边基于 lane 的 predecessor/successor 关系；
-      - detailed=False：显示 Road 之间的拓扑关系，节点位置取 Road.midpoint，
-                         并对 junction 路段进行聚合显示。
-      对于属于 junction（junction != "-1"）的节点，均显示为橙黄色。
-    """
-    if detailed:
-        G = build_topology_graph_lanes(roads)
-    else:
-        G = build_topology_graph_roads(roads)
+            # 设置时间轴范围（最近10秒）
+            window_width = 10.0
+            start_time = max(0.0, t - window_width) if t is not None else 0.0
+            end_time = max(window_width, t) if t is not None else window_width
+            self.data_plot_widget.setXRange(start_time, end_time, padding=0)
         
-    pos = nx.get_node_attributes(G, 'pos')
+        if self.sim.mode is Mode.REPLAY and hasattr(self, "sld_prog"):
+            # 防止 setValue 触发 valueChanged → _seek_abs → 再次 update 的循环
+            self.sld_prog.blockSignals(True)
+            self.sld_prog.setValue(self.sim._replay_index)
+            self.sld_prog.blockSignals(False)
+
+
+    # ---------- 控制栏槽函数 ----------
+    def _toggle_play(self):
+        # 1) 如果当前正在播放 → 执行暂停
+        if self._playing:
+            self._playing = False
+            self.btn_play.setText("▶")
+            if hasattr(self.sim, "_timer"):
+                self.sim._timer.stop()
+            return
+        # 2) 当前处于暂停，需要开始播放
+        self._playing = True
+        self.btn_play.setText("❚❚")
+        # 2-A 若已停在最后一帧，自动跳回第 0 帧并刷新画面/滑块
+        if self.sim._replay_index >= self.sim._replay_frames - 1:
+            self.sim._replay_index = 0
+            self._show_replay_frame(0)            # 立即把首帧渲染出来
+
+        # 2-B 复位时间基准：让下一 tick 从当前 sim_time 开始累积
+        if hasattr(self.sim, "_vis_next_ts"):
+            self.sim._vis_next_ts = self.sim._sim_time    # 关键行
+        if hasattr(self.sim, "_replay_speed_accum"):
+            self.sim._replay_speed_accum = 0.0            # 若用了小数累加器，也清零
+
+        # 2-C 重设速度并启动计时器
+        self.sim.set_replay_speed(self.sim.replay_speed)  # 内部会 stop→set→start
+
+        # 2-D 启动定时器
+        if hasattr(self.sim, "_timer"):
+            self.sim._timer.start()
     
-    # 构建边集
-    edge_x, edge_y = [], []
-    for u, v in G.edges():
-        x0, y0 = pos[u]
-        x1, y1 = pos[v]
-        edge_x.extend([x0, x1, None])
-        edge_y.extend([y0, y1, None])
-    edge_trace = go.Scatter(
-        x=edge_x,
-        y=edge_y,
-        line=dict(width=1, color='#888'),
-        hoverinfo='none',
-        mode='lines'
-    )
-    
-    node_x, node_y, node_text, node_color = [], [], [], []
-    for node, data in G.nodes(data=True):
-        x, y = pos[node]
-        node_x.append(x)
-        node_y.append(y)
-        # 在 detailed 模式下显示 lane 信息，同时判断所属 road 的 junction 状态
-        if detailed:
-            # text = f"{data['road_id']}\nLane {data['lane_id']} ({data['lane_type']})"
-            text = f"{data['road_id']}_{data['lane_id']}"
-        else:
-            text = str(node)
-        node_text.append(text)
-        # 若节点关联的 junction 不为 "-1"（包括aggregated节点），则使用橙色显示，否则使用天蓝色
-        if data.get('junction', "-1") != "-1":
-            node_color.append('orange')
-        else:
-            node_color.append('skyblue')
-    
-    node_trace = go.Scatter(
-        x=node_x,
-        y=node_y,
-        mode='markers+text',
-        text=node_text,
-        textposition="top center",
-        hoverinfo='text',
-        marker=dict(
-            showscale=False,
-            color=node_color,
-            size=20,
-            line_width=2
-        )
-    )
-    
-    fig = go.Figure(data=[edge_trace, node_trace],
-                    layout=go.Layout(
-                        title=dict(text='Topology Graph'if detailed else 'Topology Graph (Simplify)', font=dict(size=16)),
-                        showlegend=False,
-                        hovermode='closest',
-                        margin=dict(b=20, l=5, r=5, t=40),
-                        xaxis=dict(scaleanchor="y", scaleratio=1, showgrid=False, zeroline=False, showticklabels=False),
-                        yaxis=dict(scaleanchor="x", scaleratio=1, showgrid=False, zeroline=False, showticklabels=False),
-                        width=700,
-                        height=500,
-                    ))
-    fig.show()
+    def replay_finished(self):
+        """
+        回放帧序列播放到最后时由 SceneSimulator 调用。
+        作用：暂停计时器、把 ▶/❚❚ 按钮恢复到“播放”状态，
+        并允许用户拖动滑块或点击 ▶ 重新播放。
+        """
+        if hasattr(self, "_playing"):
+            self._playing = False
+        if hasattr(self, "btn_play"):
+            self.btn_play.setText("▶")
+        # 进度条已经在 _replay_step_once 中停在最后一帧，无需额外处理
+        
+    def _seek_delta(self, step: int):
+        self._seek_frame(self.sim._replay_index + step)
+
+    def _seek_abs(self, idx: int):
+        """
+        跳到绝对帧 idx。
+        供进度条 valueChanged 信号、以及 _seek_delta 调用。
+        """
+        idx = max(0, min(idx, self.sim._replay_frames - 1))
+        self.sim._replay_index = idx
+        self._show_replay_frame(idx)
+
+        # 更新滑块而不触发递归信号
+        self.sld_prog.blockSignals(True)
+        self.sld_prog.setValue(idx)
+        self.sld_prog.blockSignals(False)
+
+    def _seek_frame(self, idx: int):
+        idx = max(0, min(idx, self.sim._replay_frames - 1))
+        self.sim._replay_index = idx
+        self._show_replay_frame(idx)
+        self.sld_prog.blockSignals(True)
+        self.sld_prog.setValue(idx)
+        self.sld_prog.blockSignals(False)
+
+    def _speed_changed(self, idx: int):
+        """
+        处理倍速下拉框的变化。idx 为当前索引（0..4）。
+        文本格式形如 '1.25×'，去掉末尾 '×' 后转成 float。
+        """
+        txt = self.cmb_speed.itemText(idx).rstrip("×")
+        try:
+            speed = float(txt)
+        except ValueError:
+            speed = 1.0
+        self.sim.set_replay_speed(speed)
+
+
+    # ---------- 仅做可视化刷新，不递增帧 ----------
+    def _show_replay_frame(self, i: int):
+        if not (0 <= i < self.sim._replay_frames):
+            return
+        for aid, ag in self.sim._replay_agents.items():
+            row = self.sim._replay_data[aid]
+            ag.pos.x   = row["PosX"][i]
+            ag.pos.y   = row["PosY"][i]
+            ag.pos.yaw = row["Yaw"][i]
+            ag.speed   = row.get("Speed", [0]*self.sim._replay_frames)[i]
+
+        self.sim._sim_time = self.sim._replay_data[self.sim.ego_vehicle.id]["SimTime"][i]
+        self.update()
+
+    def update_replay_slider(self):
+        """回放文件载入后刷新进度条范围"""
+        if hasattr(self, "sld_prog"):
+            self.sld_prog.setMaximum(max(1, getattr(self.sim, "_replay_frames", 1))-1)

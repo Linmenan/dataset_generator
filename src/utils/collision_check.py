@@ -40,7 +40,9 @@ def _overlaps(interval1, interval2, margin=0.0) -> bool:
 
 def is_collision(agent1: TrafficAgent,
                  agent2: TrafficAgent,
-                 margin: float = 0.0) -> bool:
+                 margin_l: float = 0.0,
+                 margin_w: float = 0.0,
+                 ) -> bool:
     """
     使用分离轴定理检测两个车辆安全盒是否相交。
     margin > 0 使盒子“变大”形成安全距离；=0 刚性碰撞。
@@ -58,20 +60,22 @@ def is_collision(agent1: TrafficAgent,
                 axes.append(normal / norm)
 
     # 在所有分离轴上投影并检测
-    for axis in axes:
+    for idx, axis in enumerate(axes):
         if not _overlaps(_project(poly1, axis),
                          _project(poly2, axis),
-                         margin=margin):
+                         margin=margin_l if idx%2!=0 else margin_w,
+                         ):
             return False      # 找到分离轴 => 无碰撞
     return True
 
 def will_collision(agent1: TrafficAgent,
                  agent2: TrafficAgent,
                  pred_horizon: float = 2.0,
-                 margin: float = 0.0) -> bool:
+                 margin_l: float = 0.0,
+                 margin_w: float = 0.0,) -> bool:
     t = 0.0
     while t<=pred_horizon:
-        if is_collision(agent1=agent1.pred(dt=t),agent2=agent2.pred(dt=t),margin=margin):
+        if is_collision(agent1=agent1.pred(dt=t),agent2=agent2.pred(dt=t),margin_l=margin_l,margin_w=margin_w):
             return True
         t+=0.5
     return False

@@ -2,6 +2,7 @@ import os
 import pandas as pd
 from datetime import datetime
 import logging
+from typing import Dict, List, Tuple
 
 class DataRecorder:
     def __init__(self, save_path):
@@ -45,3 +46,38 @@ class DataRecorder:
                 df = pd.DataFrame(lines)
                 df.to_excel(writer, sheet_name=tab, index=False)
         
+    # ------------------ 读取相关 ------------------
+    def load(self, file_name: str) -> Tuple[bool, Dict[str, Dict[str, List]]]:
+        """
+        读取 `save_path` 目录下指定 Excel 文件。
+
+        Parameters
+        ----------
+        file_name : str
+            文件名(可以带或不带 .xlsx 后缀)
+
+        Returns
+        -------
+        success : bool
+            是否读取成功
+        agents_dict : Dict[str, Dict[str, List]]
+            {agent_id: {column_name: values_list}}
+        """
+        if not file_name.endswith(".xlsx"):
+            file_name += ".xlsx"
+        file_path = os.path.join(self.save_path, file_name)
+
+        if not os.path.isfile(file_path):
+            logging.error(f"文件不存在: {file_path}")
+            return False, {}
+
+        try:
+            sheets = pd.read_excel(file_path, sheet_name=None)
+            agents_dict: Dict[str, Dict[str, List]] = {
+                str(agent_id): {col: df[col].tolist() for col in df.columns}
+                for agent_id, df in sheets.items()
+            }
+            return True, agents_dict
+        except Exception as e:
+            logging.error(f"读取 Excel 失败: {e}")
+            return False, {}
