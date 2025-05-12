@@ -215,8 +215,8 @@ class SceneSimulator:
             road = self.map_parser.roads[k]
             if (road.junction == "-1"):
                 lane = random.choice(road.lanes)
-                if lane.length>10.0 and len(lane.sampled_points)>10:
-                    index = random.randrange(len(lane.sampled_points))
+                if lane.length>20.0 and len(lane.sampled_points)>20:
+                    index = random.randrange(10,len(lane.sampled_points)-10)
                     rear_point = lane.sampled_points[index][0]
                     hdg = lane.headings[index]
                     speed = 0.0
@@ -245,8 +245,8 @@ class SceneSimulator:
             road = self.map_parser.roads[k]
             if (road.junction == "-1") :
                 lane = random.choice(road.lanes)
-                if lane.length>10.0 and len(lane.sampled_points)>10:
-                    index = random.randrange(5,len(lane.sampled_points)-5)
+                if lane.length>20.0 and len(lane.sampled_points)>20:
+                    index = random.randrange(10,len(lane.sampled_points)-10)
                     rear_point = lane.sampled_points[index][0]
                     hdg = lane.headings[index]
                     speed = 0.0
@@ -519,7 +519,7 @@ class SceneSimulator:
                     pred_length+=check_lane.length
             else:
                 # 变道智能体注意力
-                if distance_between(current_agent,check_agent)<20 and will_collision(current_agent,check_agent,pred_horizon=3,margin_w=0.5):
+                if distance_between(current_agent,check_agent)<20 and will_collision(current_agent,check_agent,pred_horizon=3,margin_l=1.0,margin_w=0.5):
                     current_agent.nearerst_agent = check_agent
                     s,_,_,_,_ = self.map_parser.lanes[current_agent.current_lane_unicode].projection(check_agent.pos)
                     dis = s-current_agent.current_s
@@ -568,16 +568,16 @@ class SceneSimulator:
                 acc_in_junc = self.compute_acceleration(self.cruising_speed, current_v)
             else:
                 acc_in_junc = self.compute_acceleration(self.crossing_speed, current_v)
-                # 增加有信号灯控制路口路权让行机制
-                for check_agent in [self.ego_vehicle]+self.agents:
-                    if check_agent.id <= current_agent.id:
-                        continue
-                    if self.map_parser.lanes[check_agent.current_lane_unicode].belone_road.junction==road.junction:
-                        if will_collision(current_agent,check_agent):
-                            _,_,turn_rlation = self.get_lane_traffic_light(check_agent.current_lane_unicode)
-                            check_agent.way_right_level = self.right_of_way_map[turn_rlation]
-                            if check_agent.way_right_level>=current_agent.way_right_level:
-                                acc_in_junc = current_agent.a_min
+            # 增加有信号灯控制路口路权让行机制
+            for check_agent in [self.ego_vehicle]+self.agents:
+                if check_agent.id <= current_agent.id:
+                    continue
+                if self.map_parser.lanes[check_agent.current_lane_unicode].belone_road.junction==road.junction:
+                    if will_collision(current_agent,check_agent,pred_horizon=3,margin_l=1.0,margin_w=1.0):
+                        _,_,turn_rlation = self.get_lane_traffic_light(check_agent.current_lane_unicode)
+                        check_agent.way_right_level = self.right_of_way_map[turn_rlation]
+                        if check_agent.way_right_level>=current_agent.way_right_level:
+                            acc_in_junc = current_agent.a_min
             self.data_recorder.add_data(current_agent.id,'JunctionAcc',acc_in_junc)
             self.data_recorder.add_data(current_agent.id,'WayRightLevel',current_agent.way_right_level)
             logging.debug(f"\t路口acc:{acc_in_junc:.3f}")
