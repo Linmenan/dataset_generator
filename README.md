@@ -11,7 +11,8 @@
 
 - [x] map parser
 - [ ] visualization
-- [x] agent_generator
-- [ ] ego_generator
+- [x] agent generator
+- [ ] ego generator
+- [ ] agent decition and motion
 - [ ] simulation
-- [ ] data saver
+- [ ] data saver and loader

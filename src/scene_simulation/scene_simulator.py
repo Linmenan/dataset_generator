@@ -35,6 +35,7 @@ class SceneSimulator:
             window_size = (1000, 600),
             mode:Mode = Mode.SYNC, 
             step:float = 0.05, 
+            plot_on:bool = False, 
             plot_step:int = 5, 
             map_file_path='', 
             yaml_path='', 
@@ -48,6 +49,7 @@ class SceneSimulator:
         """
         self.mode = mode
         self.step = step
+        self.plot_on = plot_on
         self.plot_step = plot_step
 
         self.sim_frame:int = 0
@@ -75,8 +77,9 @@ class SceneSimulator:
         # ---------- UI ----------
         self.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
         # 创建并 show 视图
-        self.view = SimView(self, size=window_size)
-        self.view.show()
+        if self.plot_on:
+            self.view = SimView(self, size=window_size)
+            self.view.show()
         
         # ---------- 数据记录器 ----------
         self.data_recorder = DataRecorder(data_path)
@@ -131,7 +134,7 @@ class SceneSimulator:
         self._sim_time += self.step
         self.sim_frame += 1
         self.update_states()
-        if self.sim_frame % self.plot_step == 0:
+        if self.plot_on and self.sim_frame % self.plot_step == 0:
             self.view.update()
 
     def _replay_step_once(self):
@@ -274,8 +277,10 @@ class SceneSimulator:
 
     def update_states(self)->None:
             clear_output(wait=True)
-            self.view.clear_temp_paths()
-
+            if self.plot_on:
+                self.view.clear_temp_paths()
+            else:
+                logging.info(f"仿真时间:{self.sim_time:.2f}s")
             for current_agent in [self.ego_vehicle]+self.agents:
                 self.data_recorder.add_data(current_agent.id,'SimTime',self.sim_time)
                 self.data_recorder.add_data(current_agent.id,'PosX',current_agent.pos.x)
@@ -316,7 +321,7 @@ class SceneSimulator:
 
                 current_agent.step(a_cmd = acc_cmd, cur_cmd = curvature_cmd, dt = self.step)
                 
-                if current_agent.id=="0":
+                if self.plot_on and current_agent.id=="0":
                     self.view.add_data("ego_velocity (m/s)", self.sim_time, current_agent.speed)
                     self.view.add_data("ego_cte (m)", self.sim_time, current_b)
                     self.view.add_data("ego_ephi (deg)", self.sim_time, ephi/math.pi*180)
@@ -454,7 +459,7 @@ class SceneSimulator:
             current_agent.ref_line.append(current_lane.get_ref_line())
             pd_l = current_agent.remain_s
 
-        lane_changing_probability = 0.01
+        lane_changing_probability = 0.001
         if random.random() < lane_changing_probability and current_agent.lane_change == (-1,-1):
             current_lane = self.map_parser.lanes[current_agent.current_lane_unicode]
             if current_agent.remain_s>max(30,2*current_agent.speed) and current_lane.belone_road.junction == "-1":
@@ -517,6 +522,11 @@ class SceneSimulator:
                                 current_agent.min_distance = delta_s
                                 current_agent.nearerst_agent = check_agent
                     pred_length+=check_lane.length
+                straight_dis = distance_between(current_agent,check_agent)
+                if straight_dis<20 and will_collision(current_agent,check_agent,pred_horizon=3,margin_l=1.0,margin_w=0.5):
+                    if straight_dis<current_agent.min_distance:
+                        current_agent.min_distance = straight_dis
+                        current_agent.nearerst_agent = check_agent
             else:
                 # 变道智能体注意力
                 if distance_between(current_agent,check_agent)<20 and will_collision(current_agent,check_agent,pred_horizon=3,margin_l=1.0,margin_w=0.5):
@@ -570,14 +580,16 @@ class SceneSimulator:
                 acc_in_junc = self.compute_acceleration(self.crossing_speed, current_v)
             # 增加有信号灯控制路口路权让行机制
             for check_agent in [self.ego_vehicle]+self.agents:
-                if check_agent.id <= current_agent.id:
+                if check_agent.id == current_agent.id:
                     continue
-                if self.map_parser.lanes[check_agent.current_lane_unicode].belone_road.junction==road.junction:
-                    if will_collision(current_agent,check_agent,pred_horizon=3,margin_l=1.0,margin_w=1.0):
+                if self.map_parser.lanes[check_agent.current_lane_unicode].belone_road.junction==road.junction or distance_between(current_agent,check_agent)<20:
+                    if will_collision(current_agent,check_agent,pred_horizon=3,margin_l=1.0,margin_w=0.0):
                         _,_,turn_rlation = self.get_lane_traffic_light(check_agent.current_lane_unicode)
                         check_agent.way_right_level = self.right_of_way_map[turn_rlation]
                         if check_agent.way_right_level>=current_agent.way_right_level:
                             acc_in_junc = current_agent.a_min
+                            self.data_recorder.add_data(current_agent.id,'JunctionAgent',check_agent.id)
+
             self.data_recorder.add_data(current_agent.id,'JunctionAcc',acc_in_junc)
             self.data_recorder.add_data(current_agent.id,'WayRightLevel',current_agent.way_right_level)
             logging.debug(f"\t路口acc:{acc_in_junc:.3f}")
@@ -653,16 +665,17 @@ class SceneSimulator:
                         path=ref_line,
                         lookahead=5.0 if current_agent.lane_change == (-1,-1) else 10.0
                     )
-        if current_agent.id == "0":
+        if self.plot_on and current_agent.id == "0":
             self.view.add_temp_path(ref_line,color="c",line_width=8,alpha=0.2,z_value=0)
         # if current_agent.id == "0":
         #     start = time.perf_counter()
         #     curvature_cmd, pred_traj, sub_ref = self.mpc.solve(current_agent,ref_line)
         #     end = time.perf_counter()
         #     print(f"MPC time:{end-start}")
-        #     self.view.add_temp_path(ref_line,color="c",line_width=8,alpha=0.2,z_value=0)
-        #     self.view.add_temp_path(sub_ref,color="m",z_value=1)
-        #     self.view.add_temp_path(pred_traj,color="b",z_value=2)
+        #     if self.plot_on:
+        #         self.view.add_temp_path(ref_line,color="c",line_width=8,alpha=0.2,z_value=0)
+        #         self.view.add_temp_path(sub_ref,color="m",z_value=1)
+        #         self.view.add_temp_path(pred_traj,color="b",z_value=2)
         # else:
         #     curvature_cmd = self.pure_pursuit_curvature(
         #         pose=current_agent.pos,
@@ -680,14 +693,13 @@ class SceneSimulator:
                 current_agent.lane_change = (-1,-1)
         return curvature_cmd
 
-    ### <<< 新增 >>>
-    def load_replay(self, file_name: str, fps: float = None) -> bool:
+    def load_replay(self, fps: float = None) -> bool:
         """
         读取 Excel 录制文件并进入 REPLAY 模式。
         file_name  只需文件名，路径由构造函数里传入的 data_path 决定
         fps        指定帧率；None 时按 SimTime 差分估算
         """
-        ok, agents_dict = self.data_recorder.load(file_name)
+        ok, agents_dict = self.data_recorder.load()
         if not ok:
             logging.error("Replay 文件读取失败")
             return False
@@ -734,9 +746,7 @@ class SceneSimulator:
         logging.info(f"Replay 模式载入成功：{len(self._replay_ids)} 个智能体，{self._replay_frames} 帧")
 
         return True
-    
-    # === 新增：修改回放倍速接口 ===
+
     def set_replay_speed(self, speed: float):
         """回放模式修改倍速"""
         self.replay_speed = max(0.01, speed)
-    # --------------------------------------------------
