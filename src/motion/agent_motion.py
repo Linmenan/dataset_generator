@@ -2,7 +2,7 @@ import numpy as np
 import math
 from typing import List, Tuple
 from scipy.optimize import minimize
-from ..models.map_elements import Point2D
+from ..utils.geometry import Point2D
 from ..models.agent import EgoVehicle
 
 

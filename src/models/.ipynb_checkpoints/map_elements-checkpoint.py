@@ -1,6 +1,5 @@
 import numpy as np
 from typing import List, Tuple
-from ..utils.geometry import Point2D
 
 class Control:
     def __init__(self, id , type) -> None:
@@ -85,8 +84,9 @@ class Lane:
         else:
             self.midpoint = (0, 0)
 
+    from ..utils.geometry import Point2D
 
-    def projection(self, pos: Point2D)-> Tuple[float, float, bool, Point2D, float]:
+    def projection(self, pos: 'Point2D')-> Tuple[float, float, bool, 'Point2D', float]:
         """
         根据输入点 `pos` 计算
          s 路程
@@ -103,7 +103,7 @@ class Lane:
 
         # 在每个线段上找最近投影
         best_dist2 = float("inf")
-        best_proj = Point2D(0, 0)
+        best_proj = 'Point2D'(0, 0)
         best_i = 0
         best_t = 0.0
         p = np.array([pos.x, pos.y], dtype=float)
@@ -149,7 +149,7 @@ class Lane:
         is_out = (s < 0.0) or (s > self.length) or (abs(b) > width_at_s / 2.0)
 
         # 投影点和航向插值
-        projected_point = Point2D(best_proj[0], best_proj[1])
+        projected_point = 'Point2D'(best_proj[0], best_proj[1])
 
         # 航向插值时考虑角度环绕
         h0 = headings[best_i]
@@ -170,7 +170,7 @@ class Lane:
             return []
 
         # 1) 从 sampled_points 中提取中心点 (第一个元素)
-        ref_pts = [Point2D(x, y) 
+        ref_pts = ['Point2D'(x, y) 
                    for (x, y), (_, _), (_, _) in self.sampled_points]
         return ref_pts
 

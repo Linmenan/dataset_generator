@@ -6,9 +6,7 @@ from pyqtgraph.Qt import QtGui, QtCore, QtWidgets
 from pyqtgraph import TextItem
 
 from ..models.agent import TrafficAgent
-from ..models.map_elements import Point2D
-
-
+from ..utils.geometry import Point2D
 
 # 常见论文颜色（Tableau 10 + Set1）
 PAPER_COLORS = [
@@ -154,40 +152,69 @@ class SimView(QtWidgets.QMainWindow):
         menu.addAction(self.dock_curve.toggleViewAction())
 
     def _init_replay_controls(self, area, menu):
+        """回放模式：构建两行控制栏（按钮行 + 进度条行）"""
         self.ctrl_dock = QtWidgets.QDockWidget("播放控制", self)
         self.addDockWidget(area, self.ctrl_dock)
         menu.addAction(self.ctrl_dock.toggleViewAction())
 
-        w = QtWidgets.QWidget(); self.ctrl_dock.setWidget(w)
-        h = QtWidgets.QHBoxLayout(w); h.setContentsMargins(6, 4, 6, 4)
+        root = QtWidgets.QWidget(); self.ctrl_dock.setWidget(root)
+        vbox = QtWidgets.QVBoxLayout(root); vbox.setContentsMargins(6, 4, 6, 4)
 
-        # 按钮 / 进度条 / 倍速
-        self.btn_prev = QtWidgets.QPushButton("⏮")
-        self.btn_play = QtWidgets.QPushButton()          # 文本稍后根据状态再设
-        self.btn_next = QtWidgets.QPushButton("⏭")
-        self.sld_prog = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        # ---------- 第 1 行：五个按钮 ----------
+        h_btn = QtWidgets.QHBoxLayout()
+        self.btn_first = QtWidgets.QPushButton("⏮")   # ↩ 回到第一帧
+        self.btn_prev  = QtWidgets.QPushButton("⏪")   # ← 上一帧
+        self.btn_play  = QtWidgets.QPushButton()       # ▶/❚❚ 由状态决定
+        self.btn_next  = QtWidgets.QPushButton("⏩")   # → 下一帧
+        self.btn_last  = QtWidgets.QPushButton("⏭")   # ↪ 跳到最后一帧
+        for btn in (self.btn_first, self.btn_prev, self.btn_play, self.btn_next, self.btn_last):
+            h_btn.addWidget(btn)
+        vbox.addLayout(h_btn)
+
+        # ---------- 第 2 行：进度条 + 倍速框 ----------
+        h_seek = QtWidgets.QHBoxLayout()
+        self.sld_prog = QtWidgets.QSlider(QtCore.Qt.Horizontal)   # 原生 QSlider
         self.sld_prog.setMinimum(0)
         self.sld_prog.setMaximum(max(1, getattr(self.sim, "_replay_frames", 1)) - 1)
+        self.sld_prog.setPageStep(1)              # 单击滑槽走 1 帧（可保留，也可去掉）
+
         self.cmb_speed = QtWidgets.QComboBox()
-        self.cmb_speed.addItems(["0.1×", "0.5×", "1.0×", "1.25×", "1.5×", "2.0×", "5.0×", "10.0×"])
-        self.cmb_speed.setCurrentIndex(2)
+        self.cmb_speed.addItems(
+            ["0.1×", "0.5×", "1.0×", "1.25×", "1.5×", "2.0×", "5.0×", "10.0×"]
+        )
+        self.cmb_speed.setCurrentIndex(2)         # 默认 1.0×
 
-        for wgt in (self.btn_prev, self.btn_play, self.btn_next,
-                    self.sld_prog, self.cmb_speed):
-            h.addWidget(wgt)
+        h_seek.addWidget(self.sld_prog, 1)        # 伸缩因子 1 → 进度条占满
+        h_seek.addWidget(self.cmb_speed)
+        vbox.addLayout(h_seek)
 
-        # ——— 根据 SceneSimulator 的计时器状态来设定 _playing 和按钮文本 ———
+        # ---------- 初始播放状态 ----------
         timer_active = bool(getattr(self.sim, "_timer", None) and self.sim._timer.isActive())
         self._playing = timer_active
         self.btn_play.setText("❚❚" if timer_active else "▶")
 
-        # 信号
-        self.btn_prev.clicked.connect(lambda: self._seek_delta(-1))
-        self.btn_next.clicked.connect(lambda: self._seek_delta(1))
-        self.btn_play.clicked.connect(self._toggle_play)
+        # ---------- 信号连接 ----------
+        self.btn_first.clicked.connect(lambda: self._seek_frame(0))
+        self.btn_last .clicked.connect(lambda: self._seek_frame(self.sim._replay_frames - 1))
+        self.btn_prev .clicked.connect(lambda: self._seek_delta(-1))
+        self.btn_next .clicked.connect(lambda: self._seek_delta(1))
+        self.btn_play .clicked.connect(self._toggle_play)
         self.sld_prog.valueChanged.connect(self._seek_abs)
         self.cmb_speed.currentIndexChanged.connect(self._speed_changed)
 
+    # def eventFilter(self, obj, ev):
+    #     """让原生 QSlider 支持“点击任意位置 → 直接 Seek”"""
+    #     if obj is getattr(self, "sld_prog", None) and ev.type() == QtCore.QEvent.MouseButtonPress:
+    #         if ev.button() == QtCore.Qt.LeftButton and self.sld_prog.maximum() > self.sld_prog.minimum():
+    #             # 兼容 PyQt5 / PyQt6 的 event.pos() / event.position()
+    #             pos_x = ev.position().x() if hasattr(ev, "position") else ev.pos().x()
+    #             ratio = pos_x / self.sld_prog.width()
+    #             value = round(self.sld_prog.minimum()
+    #                         + ratio * (self.sld_prog.maximum() - self.sld_prog.minimum()))
+    #             self.sld_prog.setValue(value)   # 会触发 valueChanged → _seek_abs
+    #             return True                     # 事件已处理
+    #     # 交给父类处理其余事件
+    #     return super().eventFilter(obj, ev)
 
     def add_temp_path(
         self,

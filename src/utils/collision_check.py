@@ -80,6 +80,6 @@ def will_collision(agent1: TrafficAgent,
         t+=0.5
     return False
 
-def distance_between(agent1: TrafficAgent,
-                 agent2: TrafficAgent)->float:
+def distance_between(agent1: 'TrafficAgent',
+                 agent2: 'TrafficAgent')->float:
     return math.sqrt((agent1.pos.x-agent2.pos.x)**2+(agent1.pos.y-agent2.pos.y)**2)

@@ -68,9 +68,10 @@ class DataRecorder:
         (success, agents_dict)
         """
         # 准备 Excel 列表
-        excel_files = [
-            f for f in os.listdir(self.save_path) if f.lower().endswith(".xlsx")
-        ]
+        excel_files = sorted(
+            [f for f in os.listdir(self.save_path) if f.lower().endswith(".xlsx")],
+            reverse=True          # True → 降序；去掉则升序
+        )
         if not excel_files:
             logging.error(f"目录 {self.save_path} 下没有找到 .xlsx 文件")
             return False, {}

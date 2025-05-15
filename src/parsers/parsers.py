@@ -12,6 +12,7 @@ class MapParser:
         self.tree = ET.parse(file_path)
         self.roads = {}
         self.lanes = {}
+        self.lanes_serch = {}
         self.lane_code = int(0)
         self.traffic_lights = {} # traffic light id 与 Controlle对象构成的字典
         self.parse_oxdr_all()
@@ -24,6 +25,7 @@ class MapParser:
         """
         self.roads = {}
         self.lanes = {}
+        self.lanes_serch = {}
         self.lane_code = int(0)
         root = self.tree.getroot()
         
@@ -595,6 +597,7 @@ class MapParser:
             cum_width_right = cum_width_right + w_current
 
         self.lanes.update({lane.unicode:lane for lane in driving_lanes})
+        self.lanes_serch.update({lane.belone_road.road_id+'_'+lane.lane_id:lane for lane in driving_lanes})
         road_obj.lanes = driving_lanes
 
 
