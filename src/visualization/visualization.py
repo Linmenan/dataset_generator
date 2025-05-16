@@ -7,6 +7,7 @@ from pyqtgraph import TextItem
 
 from ..models.agent import TrafficAgent
 from ..utils.geometry import Point2D
+from ..sensor.traffic_light import get_lane_traffic_light
 
 # 常见论文颜色（Tableau 10 + Set1）
 PAPER_COLORS = [
@@ -49,10 +50,20 @@ def generate_circle_points(center, radius, num_points=50):
     return x_circle, y_circle
 
 class SimView(QtWidgets.QMainWindow):
-    def __init__(self, sim, size=(900, 600), title="Real-Time Traffic"):
+
+    def __init__(self, sim, size=(900, 600)):
         super().__init__()
         self.sim = sim
-        self.setWindowTitle(title)
+        # 根据 sim.mode 生成标题
+        from ..scene_simulation.scene_simulator import Mode   # 防循环引用
+
+        mode_title = {
+            Mode.SYNC:  "Real-Time Traffic — 同步模式",
+            Mode.ASYNC: "Real-Time Traffic — 异步模式",
+            Mode.REPLAY: ""
+        }.get(sim.mode, f"")
+
+        self.setWindowTitle(mode_title)
         self.resize(*size)
 
         # ========================
@@ -108,7 +119,6 @@ class SimView(QtWidgets.QMainWindow):
         # ========================
         # 1.3 数据曲线（右下）
         # ========================
-        from ..scene_simulation.scene_simulator import Mode   # 防循环引用
         if self.sim.mode in (Mode.SYNC, Mode.ASYNC):          # ← 只有实时仿真才建曲线窗
             self._init_curve_dock(view_menu)
         else:                                                 # ← REPLAY：把控件放这里
@@ -180,7 +190,7 @@ class SimView(QtWidgets.QMainWindow):
 
         self.cmb_speed = QtWidgets.QComboBox()
         self.cmb_speed.addItems(
-            ["0.1×", "0.5×", "1.0×", "1.25×", "1.5×", "2.0×", "5.0×", "10.0×"]
+            ["0.5×", "0.75×", "1.0×", "1.25×", "1.5×", "2.0×", "5.0×", "10.0×"]
         )
         self.cmb_speed.setCurrentIndex(2)         # 默认 1.0×
 
@@ -339,12 +349,14 @@ class SimView(QtWidgets.QMainWindow):
                 continue
 
             # 有信号灯
-            color, countdown, _ = self.sim.get_lane_traffic_light(unicode)
+            color, countdown, _ = get_lane_traffic_light(self.sim.map_parser.lanes[unicode],self.sim.map_parser.traffic_lights.values(),sim_time=self.sim.sim_time)
+            
+            
             if color!='grey':
                 if kind == 'c':      # 中心线
                     # curve.setPen(pg.mkPen('grey', width=0.1)) 
                     continue
-                curve.setPen(pg.mkPen(color))
+                curve.setPen(pg.mkPen("#cccc00" if color == "yellow" else color))
 
                 # ---- 显示倒计时（向上取整）----
                 txt_item = self.lane_countdowns[(rid, lid)]
@@ -357,7 +369,7 @@ class SimView(QtWidgets.QMainWindow):
                     countdown_show = str(countdown)
                 txt_item.setText('('+countdown_show+')')
                 # 文字颜色同信号色，更直观
-                txt_item.setColor(color)
+                txt_item.setColor("#cccc00" if color == "yellow" else color)
 
 
         # ---- 2) 更新智能体多边形 & 箭头 ----

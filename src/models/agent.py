@@ -3,7 +3,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Tuple, List, Dict
 from ..utils.geometry import Pose2D,Box2D
-
+from ..sensor.traffic_light import get_lane_traffic_light
 class NearbyDistricts:
     def __init__(self) -> None:
         self.front_agents = []        # 记录自身前方{智能体,距离,横向距离,纵向距离}
@@ -81,9 +81,18 @@ class TrafficAgent:
         self.out_lane = False
         self.ephi = float('inf')
         self.way_right_level = way_right_level
+        self.right_of_way_map = {
+            "Left": 1,
+            "Right": 0,
+            "Straight": 2,
+            "": 0,
+        }
 
-    def pred(self,dt: float)->'TrafficAgent':
-        speed = self.speed
+    def pred(self,dt: float,set_speed: float = None)->'TrafficAgent':
+        speed = self.speed if set_speed is None else set_speed
+        # if set_speed is None:
+        #     speed = max(speed,0.3)
+        
         delta_s = speed*dt
         if abs(self.curvature)>1.0e-3:
             pos = Pose2D(
@@ -227,7 +236,35 @@ class TrafficAgent:
             # else:
             #     pass
         self.nearest_route_agent.sort(key=lambda x: x[1])
-
+    from ..models.map_elements import Controller
+    def get_right_of_way(self,current_lane:'Lane',signal_map:List['Controller'],sim_time:float)->None:
+        if current_lane.belone_road.junction == "-1":
+            # 道路中
+            if self.lane_change == (-1,-1):
+                #非变道,路权高
+                self.way_right_level = 2
+            else:
+                #变道,路权低
+                self.way_right_level = 1
+        else:
+            # 路口
+            color,countdown,turn_rlation = get_lane_traffic_light(current_lane,signal_map,sim_time)
+            self.way_right_level = self.right_of_way_map[turn_rlation]
+            if color=='grey':
+                # 非控制路口
+                if abs(self.curvature)<0.001:
+                    # 直行
+                    self.way_right_level = 2
+                elif self.curvature>0.001:
+                    # 左转弯
+                    self.way_right_level = 1
+                else:
+                    # 右转弯
+                    self.way_right_level = 0
+            else:
+                # 控制路口,查询路线转弯类型
+                self.way_right_level = self.right_of_way_map[turn_rlation]
+   
 
 
 class EgoVehicle(TrafficAgent):

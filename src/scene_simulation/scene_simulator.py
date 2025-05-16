@@ -1,7 +1,7 @@
 from ..models.agent import *
 from ..parsers.parsers import MapParser
 from ..models.map_elements import *
-from ..utils.collision_check import is_collision, will_collision, distance_between
+from ..utils.collision_check import is_collision, will_collision, distance_between, envelope_collision_check
 
 import plotly.graph_objects as go
 import numpy as np
@@ -12,15 +12,19 @@ import time
 import math
 from datetime import datetime
 from typing import Callable, Awaitable, Optional, List
+import logging
+from IPython.display import clear_output
 
 from pyqtgraph.Qt import QtWidgets, QtCore, QtGui
+
 from ..visualization.visualization import SimView
 from ..utils.data_recorder import DataRecorder
-from IPython.display import clear_output
-import logging
-from ..motion.agent_motion import LateralMPC_NL
 from ..utils.color_print import RED,RESET,GREEN,YELLOW,BLUE,CYAN,MAGENTA
-from ..utils.common import normalize_angle
+
+from ..motion.lateral_mpc_nl import LateralMPC_NL
+from ..motion.base_longitudinal_control import *
+from ..motion.pure_pursuit import pure_pursuit
+
 
 from collections import OrderedDict   # 放在其他 import 之后
 
@@ -69,6 +73,7 @@ class SceneSimulator:
 
         self.cruising_speed = 10.0
         self.crossing_speed = 5.0
+        self.lane_changing_probability = 0.001
         self.perception_range = perception_range
         self.ego_vehicle = None
         self.agents = []
@@ -86,23 +91,16 @@ class SceneSimulator:
         # ---------- 日志 ----------
         logging.debug("simulator init")
 
-        self.right_of_way_map = {
-            "Left": 1,
-            "Right": 0,
-            "Straight": 2,
-            "": 0,
-        }
-
         # ---------- 回放相关 ----------
         self._replay_ready   = False     # 是否加载了回放文件
         self._replay_data    = {}        # {agent_id: {col: list}}
         self._replay_frames  = 1
         self._replay_index   = 0
-        self._replay_dt      = 0.05      # 默认 20 Hz，可由文件推断
+        self._data_dt        = 0.1       # 默认 0.1 s ，可由文件推断
         self._replay_ids     = []        # agent 顺序
         self._replay_agents  = OrderedDict()  # 便于稳定迭代顺序
         self.replay_speed = 1.0        # 当前倍速
-        self._vis_dt      = 1 / 30.0     # 可视化 30 fps   (自己喜欢可调)
+        self._vis_dt      = 1 / 10.0     # 可视化 10 fps   (自己喜欢可调)
         self._replay_speed_accum  = 0.0        # ← 新增：小数倍速累加器
         self._vis_next_ts = 0.0          # 下次应渲染到的 sim_time
 
@@ -141,7 +139,11 @@ class SceneSimulator:
         if not self._replay_ready:
             return
         # A) 计算本 tick 应推进的帧数
-        self._replay_speed_accum += self.replay_speed          # 累加倍速
+        frames_per_tick = (self.replay_speed *
+                       self._timer.interval() / 1000.0 /
+                       self._data_dt)                          # 结合渲染刷新率,数据帧率,倍速计算推进帧数
+
+        self._replay_speed_accum += frames_per_tick            # 累加跳帧数
         step = int(self._replay_speed_accum)                   # 取整数前进帧数
         if step == 0:                                          # <0.5× 等情况
             return
@@ -218,7 +220,7 @@ class SceneSimulator:
             road = self.map_parser.roads[k]
             if (road.junction == "-1"):
                 lane = random.choice(road.lanes)
-                if lane.length>20.0 and len(lane.sampled_points)>100:
+                if lane.length>12.0 and len(lane.sampled_points)>100:
                     index = random.randrange(50,len(lane.sampled_points)-50)
                     rear_point = lane.sampled_points[index][0]
                     hdg = lane.headings[index]
@@ -248,7 +250,7 @@ class SceneSimulator:
             road = self.map_parser.roads[k]
             if (road.junction == "-1") :
                 lane = random.choice(road.lanes)
-                if lane.length>20.0 and len(lane.sampled_points)>100:
+                if lane.length>12.0 and len(lane.sampled_points)>100:
                     index = random.randrange(50,len(lane.sampled_points)-50)
                     rear_point = lane.sampled_points[index][0]
                     hdg = lane.headings[index]
@@ -276,7 +278,6 @@ class SceneSimulator:
                 break
 
     def update_states(self)->None:
-            lane_changing_probability = 0.001
             clear_output(wait=True)
             if self.plot_on:
                 self.view.clear_temp_paths()
@@ -286,7 +287,11 @@ class SceneSimulator:
                 current_agent.bev_perception([self.ego_vehicle]+self.agents) # 感知周边智能体
                 current_agent.lane_location(self.map_parser.lanes) # 计算当前车道以及纵向、横向、航向信息
                 current_agent.get_route_agent([self.ego_vehicle]+self.agents) # 计算沿途智能体（属于后台作弊）
-
+                current_agent.get_right_of_way(
+                    current_lane=self.map_parser.lanes[current_agent.current_lane_unicode], 
+                    signal_map=self.map_parser.traffic_lights.values(), 
+                    sim_time=self.sim_time
+                    ) # 获取路权信息
             for current_agent in [self.ego_vehicle]+self.agents:
                 self.data_recorder.add_data(current_agent.id,'SimTime',self.sim_time)
                 self.data_recorder.add_data(current_agent.id,'PosX',current_agent.pos.x)
@@ -313,7 +318,14 @@ class SceneSimulator:
                 
                 # 规划
                 from ..motion.agrnt_route_planner import agent_random_route
-                agent_random_route(lane_changing_probability, current_agent, self.map_parser.lanes, self.map_parser.lanes_serch) # 智能体道路规划（变道决策）
+                agent_random_route(self.lane_changing_probability, current_agent, self.map_parser.lanes, self.map_parser.lanes_serch) # 智能体道路规划（变道决策）
+                
+                self.data_recorder.add_data(
+                    current_agent.id,
+                    "LaneMap",
+                    "->".join(f"R{ln.belone_road.road_id}L{ln.lane_id}" for ln in current_agent.road_map)
+                )
+
                 # 控制
                 acc_cmd = self.agent_longitudinal_control(current_agent=current_agent)
                 curvature_cmd = self.agent_leternal_control(current_agent=current_agent)
@@ -321,14 +333,11 @@ class SceneSimulator:
                 logging.debug(f"\t v:{current_agent.speed:.3f}, acc_cmd:{acc_cmd:.3f}, cur_cmd:{curvature_cmd:.4f}")
                 self.data_recorder.add_data(current_agent.id,'AccCmd',acc_cmd)
                 self.data_recorder.add_data(current_agent.id,'CurCmd',curvature_cmd)
-                
-                lane_map = ""
-                for lane in current_agent.road_map:
-                    lane_map+="R"+lane.belone_road.road_id+"L"+lane.lane_id+"->"
-                self.data_recorder.add_data(current_agent.id,'LaneMap',lane_map)
 
+                # 更新智能体状态
                 current_agent.step(a_cmd = acc_cmd, cur_cmd = curvature_cmd, dt = self.step)
                 
+                # 数据曲线数据刷新
                 if self.plot_on and current_agent.id=="0":
                     self.view.add_data("ego_velocity (m/s)", self.sim_time, current_agent.speed)
                     self.view.add_data("ego_cte (m)", self.sim_time, current_agent.cte)
@@ -337,10 +346,6 @@ class SceneSimulator:
                 #更新当前道路和车道
                 if current_agent.remain_s < 0.1:
                     if self.map_parser.lanes[current_agent.current_lane_unicode].successor:
-                        # lane_map = ""
-                        # for lane in current_agent.road_map:
-                        #     lane_map+="R"+lane.belone_road.road_id+"L"+lane.lane_id+"->"
-                        # logging.info(f"agent {current_agent.id} map {lane_map}")
                         
                         current_agent.current_road_index = current_agent.road_map[1].belone_road.road_id
                         current_agent.current_lane_index = current_agent.road_map[1].lane_id
@@ -357,106 +362,7 @@ class SceneSimulator:
                             current_agent.lane_change = (-1,-1)
                             logging.warning(f"Agent {current_agent.id} 变道失败，放弃变道！")
 
-
-
-
-    def acc_idm(self, delta_s: float,
-                v1: float,
-                v2: float,
-                v0: float,
-                T: float = 1.5) -> float:
-        """
-        基于 IDM 的自适应巡航加速度计算。
-        delta_s: 与前车净距 (m)
-        v1: 当前车速 (m/s)
-        v2: 前车车速 (m/s)
-        v0: 期望车速上限 v_max (m/s)
-        返回: 加速度 a (m/s^2)
-        """
-        safe_des = v1**2/2+2
-        a = 2*((delta_s-safe_des)/(T**2)+(0.0*v2-v1)/T)
-        if v1>v0:
-            a1 = self.compute_acceleration(v0,v1)
-            a = min(a,a1)
-        return a
-
-    def compute_acceleration(self, target_speed: float, current_speed: float) -> float:
-        return (target_speed**2 - current_speed**2)/(2)
     
-    def compute_stop_acceleration(self, target_speed:float, current_speed: float, remain_distance: float) -> float:
-        remain_distance = max(remain_distance,1e-3)
-        if current_speed**2<2*remain_distance and remain_distance>0.1:
-            return self.compute_acceleration(self.cruising_speed,current_speed)
-        return (target_speed**2 - current_speed**2)/(2*remain_distance)
-    from ..utils.geometry import Point2D
-    def pure_pursuit_curvature(self, pose: Pose2D, path: List['Point2D'], lookahead: float) -> float:
-        """
-        纯追踪法计算曲率 κ：
-        κ = 2 * sin(alpha) / L_d
-        其中 alpha = 目标点方向与车辆航向的夹角，
-            L_d    = lookahead 预瞄距离。
-
-        参数:
-        position  当前车辆质心位置
-        path      参考线采样点列表，至少两个点
-        lookahead 预瞄距离
-
-        返回:
-        曲率 κ；若输入不合法或找不到预瞄点，返回 None。
-        """
-
-        # 1) 找到最近的路径点索引
-        dists = [(pt.x - pose.x)**2 + (pt.y - pose.y)**2 for pt in path]
-        idx0 = min(range(len(path)), key=lambda i: dists[i])
-
-        # 2) 在后续点中寻找首个满足距离 >= lookahead 的预瞄点
-        target = None
-        L2 = lookahead**2
-        for pt in path[idx0+1:]:
-            if (pt.x - pose.x)**2 + (pt.y - pose.y)**2 >= L2:
-                target = pt
-                break
-        # 若后面都不够远，就用最后一个点
-        if target is None:
-            target = path[-1]
-
-
-        # 4) 计算车头指向“预瞄点”的角度 alpha
-        dx = target.x - pose.x
-        dy = target.y - pose.y
-        angle_to_target = math.atan2(dy, dx)
-
-        # 归一化角度差到 [-pi, +pi]
-        alpha = normalize_angle(angle_to_target - pose.yaw)
-
-        # 5) 计算曲率 κ = 2*sin(alpha) / L_d
-        # sin(alpha) 左转为正，右转为负
-        curvature = 2 * math.sin(alpha) / lookahead
-
-        return curvature
-
-    def get_lane_traffic_light(self, lane_unicode: str) -> Tuple[str,float,str]:
-        lane = self.map_parser.lanes[lane_unicode]
-        road = lane.belone_road
-        light = ('grey',0.0,'')
-        if road.junction != "-1":
-                if road.signals is not None:
-                    for signal in road.signals:
-                        if signal.type=='reference':
-                            id = signal.signal_id
-                            from_lane = int(signal.from_lane)
-                            to_lane =  int(signal.to_lane)
-                            turn_relation = signal.turn_relation
-                            if int(lane.lane_id)>=from_lane and int(lane.lane_id)<=to_lane:
-                                for controll in self.map_parser.traffic_lights.values():
-                                    for control in controll.controls:
-                                        if control.signal_id == id:
-                                            if controll.signal_controller is not None:
-                                                t = self.sim_time
-                                                status = controll.signal_controller.state_with_countdown(t=t)
-                                                now_ = status[id]
-                                                light = (now_[0].value,now_[1],turn_relation)
-        return light
 
     def agent_longitudinal_control(self, current_agent:TrafficAgent)->float:
         #纵向控制
@@ -465,6 +371,8 @@ class SceneSimulator:
         current_v = current_agent.speed
         
         acc_cmd = current_agent.a_max
+
+        # 智能体
         if current_agent.nearest_route_agent is not None and current_agent.nearest_route_agent:
             nearerst_agent,dis = current_agent.nearest_route_agent[0]
             if current_agent.nearest_route_agent[0][1]>10:
@@ -473,7 +381,7 @@ class SceneSimulator:
                 logging.debug(f"\t{RED}最近智能体:{nearerst_agent.id},在前方{dis:.3f}m{RESET}")
             agent_v = nearerst_agent.speed
             delta_s = dis-current_agent.length_front-nearerst_agent.length_rear
-            acc_follow = self.acc_idm(delta_s=delta_s, v1=current_v, v2=agent_v, v0=self.crossing_speed if road.junction != "-1" else self.cruising_speed)
+            acc_follow = acc_idm(delta_s=delta_s, v1=current_v, v2=agent_v, v0=self.crossing_speed if road.junction != "-1" else self.cruising_speed)
             logging.debug(f"\t路线跟车acc:{acc_follow:.3f}")
             acc_cmd = min(acc_cmd, acc_follow)
             self.data_recorder.add_data(current_agent.id,'OnRouteClosestAgentId',nearerst_agent.id)
@@ -481,6 +389,7 @@ class SceneSimulator:
             self.data_recorder.add_data(current_agent.id,'OnRouteClosestAgentSpd',agent_v)
             self.data_recorder.add_data(current_agent.id,'OnRouteFollowAcc',acc_follow)
 
+        # 开阔空间智能体避碰,保底
         if current_agent.around_agents.front_agents:
             # open_space_msg = ""
             # for agent,dis,lat,lon in current_agent.around_agents.front_agents:
@@ -495,7 +404,7 @@ class SceneSimulator:
                     break
             if open_agent is not None:
                 agent_v = open_agent.speed
-                acc_follow = self.acc_idm(delta_s=lon, v1=current_v, v2=agent_v, v0=self.crossing_speed if road.junction != "-1" else self.cruising_speed)
+                acc_follow = acc_idm(delta_s=lon, v1=current_v, v2=agent_v, v0=self.crossing_speed if road.junction != "-1" else self.cruising_speed)
                 logging.debug(f"\t开阔空间跟车acc:{acc_follow:.3f}")
                 acc_cmd = min(acc_cmd, acc_follow)
                 self.data_recorder.add_data(current_agent.id,'OpenSpaceClosestAgentId',open_agent.id)
@@ -503,102 +412,105 @@ class SceneSimulator:
                 self.data_recorder.add_data(current_agent.id,'OpenSpaceClosestAgentSpd',agent_v)
                 self.data_recorder.add_data(current_agent.id,'FollowAcc',acc_follow)
         
-        # if road.junction != "-1":
-        #     logging.debug(f"\t当前在路口,前方道路type:{road.successor[0]}")
-        #     current_lane = self.map_parser.lanes[current_agent.current_lane_unicode]
-        #     color,countdown,turn_rlation = self.get_lane_traffic_light(current_lane.unicode)
-        #     current_agent.way_right_level = self.right_of_way_map[turn_rlation]
+        # 路口中路权礼让
+        if road.junction != "-1":
+            color,_,_ = get_lane_traffic_light(current_lane,self.map_parser.traffic_lights.values(),sim_time=self.sim_time)
 
-        #     if color=='grey':
-        #         acc_in_junc = self.compute_acceleration(self.cruising_speed, current_v)
-        #     else:
-        #         acc_in_junc = self.compute_acceleration(self.crossing_speed, current_v)
-        #     # 增加有信号灯控制路口路权让行机制
-        #     for check_agent in [self.ego_vehicle]+self.agents:
-        #         if check_agent.id == current_agent.id:
-        #             continue
-        #         if self.map_parser.lanes[check_agent.current_lane_unicode].belone_road.junction==road.junction or distance_between(current_agent,check_agent)<20:
-        #             if will_collision(current_agent,check_agent,pred_horizon=3,margin_l=1.0,margin_w=0.0):
-        #                 _,_,turn_rlation = self.get_lane_traffic_light(check_agent.current_lane_unicode)
-        #                 check_agent.way_right_level = self.right_of_way_map[turn_rlation]
-        #                 if check_agent.way_right_level>=current_agent.way_right_level:
-        #                     acc_in_junc = current_agent.a_min
-        #                     self.data_recorder.add_data(current_agent.id,'JunctionAgent',check_agent.id)
-
-        #     self.data_recorder.add_data(current_agent.id,'JunctionAcc',acc_in_junc)
-        #     self.data_recorder.add_data(current_agent.id,'WayRightLevel',current_agent.way_right_level)
-        #     logging.debug(f"\t路口acc:{acc_in_junc:.3f}")
-        #     acc_cmd = min(acc_cmd, acc_in_junc)
-            
-        # else:
-        # 在道路上
-        pred_length = 0.0
-        for check_lane in current_agent.road_map:
-            if check_lane.belone_road.junction!='-1':
-                color, countdown, _ = self.get_lane_traffic_light(check_lane.unicode)
-                lane_remain_s = pred_length-current_agent.current_s
-                signal_remain_s = lane_remain_s-current_agent.length_front-0.5
-                if color == 'grey':
-                    pred_length+=check_lane.length
+            if color=='grey':
+                acc_in_junc = compute_acceleration(self.cruising_speed, current_v)
+            else:
+                acc_in_junc = compute_acceleration(self.crossing_speed, current_v)
+            # 增加有信号灯控制路口路权让行机制
+            around_agents = current_agent.around_agents.front_agents
+            if abs(current_agent.curvature)<0.01:
+                around_agents+=current_agent.around_agents.left_agents+current_agent.around_agents.right_agents
+            elif current_agent.curvature>=0.01:
+                around_agents+=current_agent.around_agents.left_agents
+            else:
+                around_agents+=current_agent.around_agents.right_agents
+            for check_agent,dis,lat,lon in around_agents:
+                if check_agent.id == current_agent.id:
                     continue
-                self.data_recorder.add_data(current_agent.id,'Signal',color)
-                self.data_recorder.add_data(current_agent.id,'SignalRemainS',signal_remain_s)
-
-                if (color == 'green'):
-                    logging.debug(f"\t前方{lane_remain_s:.3f}m路口{GREEN}{color}{RESET}灯")
-                elif (color=='red'):
-                    logging.debug(f"\t前方{lane_remain_s:.3f}m路口{RED}{color}{RESET}灯")
-                stop_s = abs(current_agent.speed**2/(2*current_agent.a_min))
-                if signal_remain_s>max(stop_s, 30.0):
-                    acc_safe = self.compute_acceleration(self.cruising_speed, current_v)
-                    self.data_recorder.add_data(current_agent.id,'SignalSafeacc',acc_safe)
-                    logging.debug(f"\t灯前安全acc{acc_safe:.3f}")
-                    acc_cmd = min(acc_cmd, acc_safe)
-                else:
-                    if color == 'green':
-                        if countdown>3.0:
-                            acc_green = self.compute_acceleration(self.crossing_speed, current_v)
-                            self.data_recorder.add_data(current_agent.id,'JunctionAcc',acc_green)
-                            logging.debug(f"\t灯前通行acc{acc_green:.3f}")
-                            acc_cmd = min(acc_cmd, acc_green)
-                        else:
-                            acc_wait = self.compute_stop_acceleration(
-                                target_speed=0.0, current_speed=current_v, remain_distance=signal_remain_s
-                                )
-                            self.data_recorder.add_data(current_agent.id,'WaitAcc',acc_wait)
-                            logging.debug(f"\t灯前等待acc{acc_wait:.3f}")
-                            acc_cmd = min(acc_cmd, acc_wait)
-                    # elif color == 'grey':
-                    #     acc_in_road = self.compute_acceleration(self.cruising_speed, current_v)
-                    #     self.data_recorder.add_data(current_agent.id,'NoControlJunctionAcc',acc_in_road)
-                    #     logging.debug(f"\t道路acc:{acc_in_road:.3f}")
-                    #     acc_cmd = min(acc_cmd, acc_in_road)
+                if envelope_collision_check(current_agent,check_agent,pred_horizon=3,margin_l=1.0,margin_w=0.0):
+                    if dis>20 and check_agent.way_right_level>current_agent.way_right_level:
+                        acc_in_junc = min(acc_in_junc,current_agent.a_min)
+                        self.data_recorder.add_data(current_agent.id,'JunctionAgent',check_agent.id)
                     else:
-                        acc_red =  self.compute_stop_acceleration(
-                            target_speed=0.0, current_speed=current_v, remain_distance=signal_remain_s
-                            )
-                        self.data_recorder.add_data(current_agent.id,'RedStopAcc',acc_red)
-                        logging.debug(f"\t红灯acc:{acc_red:.3f}")
-                        acc_cmd = min(acc_cmd,acc_red)
-            pred_length+=check_lane.length
-            if pred_length-current_agent.current_s>30:
-                acc_in_road1 = self.compute_acceleration(self.cruising_speed, current_v)
-                self.data_recorder.add_data(current_agent.id,'RoadAcc',acc_in_road1)
-                logging.debug(f"\t道路acc:{acc_in_road1:.3f}")
-                acc_cmd = min(acc_cmd, acc_in_road1)
-                break
-        else:
-            logging.warning(f"\tAgent {current_agent.id} 前方无路!")
-            acc_cmd = min(acc_cmd, current_agent.a_min)
+                        if envelope_collision_check(current_agent,check_agent,agent2_speed=0.0,pred_horizon=3,margin_l=1.0,margin_w=0.0):
+                            # 如果对方避让会撞,则自己必须让行;对方避让不会撞,则自己可以加速
+                            acc_in_junc = min(acc_in_junc,current_agent.a_min)
+            self.data_recorder.add_data(current_agent.id,'JunctionAcc',acc_in_junc)
+            self.data_recorder.add_data(current_agent.id,'WayRightLevel',current_agent.way_right_level)
+            logging.debug(f"\t路口acc:{acc_in_junc:.3f}")
+            acc_cmd = min(acc_cmd, acc_in_junc)
+        
+        # 找信号灯
+        if (len(current_agent.road_map)>1):
+            pred_length = current_agent.remain_s
+            for check_lane in current_agent.road_map[1:]:
+                if check_lane.belone_road.junction!='-1':
+                    color, countdown, _ = get_lane_traffic_light(check_lane,self.map_parser.traffic_lights.values(),sim_time=self.sim_time)
+                    signal_remain_s = pred_length-current_agent.length_front-0.5
+                    if color == 'grey':
+                        # 无控制路口,迭代距离,下一条
+                        pred_length+=check_lane.length
+                        continue
+                    self.data_recorder.add_data(current_agent.id,'Signal',color)
+                    self.data_recorder.add_data(current_agent.id,'SignalRemainS',signal_remain_s)
+
+                    if (color == 'green'):
+                        logging.debug(f"\t前方{signal_remain_s:.3f}m路口{GREEN}{color}{RESET}灯")
+                    elif (color=='red'):
+                        logging.debug(f"\t前方{signal_remain_s:.3f}m路口{RED}{color}{RESET}灯")
+                    
+                    stop_s = abs(current_agent.speed**2/(2*current_agent.a_min))
+                    if signal_remain_s>max(stop_s, 30.0):
+                        acc_safe = compute_acceleration(self.cruising_speed, current_v)
+                        self.data_recorder.add_data(current_agent.id,'SignalSafeacc',acc_safe)
+                        logging.debug(f"\t灯前安全acc{acc_safe:.3f}")
+                        acc_cmd = min(acc_cmd, acc_safe)
+
+                    else:
+                        if color == 'green':
+                            if countdown>3.0:
+                                acc_green = compute_acceleration(self.crossing_speed, current_v)
+                                self.data_recorder.add_data(current_agent.id,'JunctionAcc',acc_green)
+                                logging.debug(f"\t灯前通行acc{acc_green:.3f}")
+                                acc_cmd = min(acc_cmd, acc_green)
+                            else:
+                                acc_wait = compute_stop_acceleration(
+                                    target_speed=0.0, cruising_speed=self.cruising_speed, current_speed=current_v, remain_distance=signal_remain_s
+                                    )
+                                self.data_recorder.add_data(current_agent.id,'WaitAcc',acc_wait)
+                                logging.debug(f"\t灯前等待acc{acc_wait:.3f}")
+                                acc_cmd = min(acc_cmd, acc_wait)
+                        else:
+                            acc_red =  compute_stop_acceleration(
+                                target_speed=0.0, cruising_speed=self.cruising_speed, current_speed=current_v, remain_distance=signal_remain_s
+                                )
+                            self.data_recorder.add_data(current_agent.id,'RedStopAcc',acc_red)
+                            logging.debug(f"\t红灯acc:{acc_red:.3f}")
+                            acc_cmd = min(acc_cmd,acc_red)
+                pred_length+=check_lane.length
+
+                if pred_length>30:
+                    # 前方30m内无信号灯,则可以加速
+                    acc_in_road1 = compute_acceleration(self.cruising_speed, current_v)
+                    self.data_recorder.add_data(current_agent.id,'RoadAcc',acc_in_road1)
+                    logging.debug(f"\t道路acc:{acc_in_road1:.3f}")
+                    acc_cmd = min(acc_cmd, acc_in_road1)
+                    break
+            else:
+                logging.warning(f"\tAgent {current_agent.id} 前方无路!")
+                acc_cmd = min(acc_cmd, current_agent.a_min)
         
         acc_cmd = min(max(acc_cmd,current_agent.a_min),current_agent.a_max)
         return acc_cmd
     
     def agent_leternal_control(self,current_agent)->float:
         #横向控制
-        import time
         ref_line = [element for sub_list in current_agent.ref_line for element in sub_list]
-        curvature_cmd = self.pure_pursuit_curvature(
+        curvature_cmd = pure_pursuit(
                         pose=current_agent.pos,
                         path=ref_line,
                         lookahead=5.0 if current_agent.lane_change == (-1,-1) else 10.0
@@ -637,19 +549,18 @@ class SceneSimulator:
         file_name  只需文件名，路径由构造函数里传入的 data_path 决定
         fps        指定帧率；None 时按 SimTime 差分估算
         """
-        ok, agents_dict = self.data_recorder.load()
+        ok, agents_dict, file_name = self.data_recorder.load()
         if not ok:
             logging.error("Replay 文件读取失败")
             return False
+        self.view.setWindowTitle(f"Replay ({file_name})")
         self.view.show()
         self._replay_data   = agents_dict
         self._replay_ids    = sorted(agents_dict.keys(), key=int)
         self._replay_frames = len(agents_dict[self._replay_ids[0]]["SimTime"])
         self._replay_index  = 0
 
-        self._replay_dt     = 1.0 / fps if fps else max(1e-3,
-                           agents_dict[next(iter(agents_dict))]["SimTime"][1] -
-                           agents_dict[next(iter(agents_dict))]["SimTime"][0])
+        self._data_dt = agents_dict[next(iter(agents_dict))]["SimTime"][1] - agents_dict[next(iter(agents_dict))]["SimTime"][0]
 
         # 创建静态 TrafficAgent 对象池
         self._replay_agents.clear()
