@@ -41,7 +41,7 @@ def agent_random_route(lane_changing_probability, current_agent:TrafficAgent,lan
                     current_agent.plan_road_map.clear()
                     current_agent.plan_ref_line.clear()
                     current_agent.plan_plan_haul.clear()
-                    current_agent.lane_change = (current_lane.unicode,hold_lane.unicode)
+                    current_agent.lane_change = (current_lane.unicode,plan_hold_lane.unicode)
                     plan_pd_l = current_lane.projection(current_agent.pos)[0]
                     current_agent.plan_road_map.append(plan_hold_lane)
                     current_agent.plan_ref_line.append(plan_hold_lane.get_ref_line())

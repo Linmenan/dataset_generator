@@ -88,25 +88,27 @@ class TrafficAgent:
             "": 0,
         }
 
-    def pred(self,dt: float,set_speed: float = None)->'TrafficAgent':
+    def pred(self,dt: float,set_speed: float = None,set_curvature: float = None)->'TrafficAgent':
         speed = self.speed if set_speed is None else set_speed
         # if set_speed is None:
         #     speed = max(speed,0.3)
-        
+        pre_cur = self.curvature if set_curvature is None else set_curvature
+
         delta_s = speed*dt
-        if abs(self.curvature)>1.0e-3:
+        if abs(pre_cur)>1.0e-3:
             pos = Pose2D(
-                self.pos.x + (np.sin(self.pos.yaw + self.curvature * delta_s) - np.sin(self.pos.yaw))/self.curvature, 
-                self.pos.y + (np.cos(self.pos.yaw) - np.cos(self.pos.yaw + self.curvature * delta_s))/self.curvature,
-                self.pos.yaw+self.curvature * delta_s
+                self.pos.x + (np.sin(self.pos.yaw + pre_cur * delta_s) - np.sin(self.pos.yaw))/pre_cur, 
+                self.pos.y + (np.cos(self.pos.yaw) - np.cos(self.pos.yaw + pre_cur * delta_s))/pre_cur,
+                self.pos.yaw+pre_cur * delta_s
                 )
         else:
             pos = Pose2D(
                 self.pos.x + delta_s*np.cos(self.pos.yaw), 
                 self.pos.y+delta_s*np.sin(self.pos.yaw),
-                self.pos.yaw+self.curvature * delta_s
+                self.pos.yaw+pre_cur * delta_s
                 )
-        return TrafficAgent(pos=pos, speed=speed, curvature=self.curvature,width=self.width,length_front=self.length_front,length_rear=self.length_rear)
+        return TrafficAgent(pos=pos, speed=speed, curvature=pre_cur,width=self.width,length_front=self.length_front,length_rear=self.length_rear)
+    
     def step(self, a_cmd: float, dt: float, cur_cmd: float = 0.0) -> None:
         """
         仿真步进。
@@ -157,7 +159,7 @@ class TrafficAgent:
             dis = distance_between(agent1=self, agent2=agent)
             if dis < 30:
 
-                pos_ego_frame = transfer_to(ref=self.pos, obj=agent.pos)
+                # pos_ego_frame = transfer_to(ref=self.pos, obj=agent.pos)
 
                 corners_ego_frame = transfer_to(ref=self.pos, obj=agent.box.get_corners())
                 xs = [p.x for p in corners_ego_frame]
@@ -165,16 +167,32 @@ class TrafficAgent:
                 a_min_x, a_max_x = min(xs), max(xs)
                 a_min_y, a_max_y = min(ys), max(ys)
 
+
+                
                 e_front = self.length_front
                 e_rear  = -self.length_rear
                 e_left  =  self.width / 2
                 e_right = -self.width / 2
 
+                corners_check_frame = transfer_to(ref=agent.pos, obj=self.box.get_corners())
+                xs1 = [p.x for p in corners_check_frame]
+                ys1 = [p.y for p in corners_check_frame]
+                a_min_x1, a_max_x1 = min(xs1), max(xs1)
+                a_min_y1, a_max_y1 = min(ys1), max(ys1)
+
                 
+                
+                e_front1 = agent.length_front
+                e_rear1  = -agent.length_rear
+                e_left1  =  agent.width / 2
+                e_right1 = -agent.width / 2
+
                 # ------------------ 2. 判断是否碰撞 ------------------
                 overlap_x = (a_min_x <= e_front) and (a_max_x >= e_rear)
                 overlap_y = (a_min_y <= e_left ) and (a_max_y >= e_right)
-                if overlap_x and overlap_y:
+                overlap_x1 = (a_min_x1 <= e_front1) and (a_max_x1 >= e_rear1)
+                overlap_y1 = (a_min_y1 <= e_left1 ) and (a_max_y1 >= e_right1)
+                if overlap_x and overlap_y and overlap_x1 and overlap_y:
                     self.around_agents.collition_agents.append((agent,dis,0.0,0.0))
                 # ------------------ 3. 分类 ------------------
                 # 优先级：front > left > right > rear
@@ -236,6 +254,7 @@ class TrafficAgent:
             # else:
             #     pass
         self.nearest_route_agent.sort(key=lambda x: x[1])
+
     from ..models.map_elements import Controller
     def get_right_of_way(self,current_lane:'Lane',signal_map:List['Controller'],sim_time:float)->None:
         if current_lane.belone_road.junction == "-1":

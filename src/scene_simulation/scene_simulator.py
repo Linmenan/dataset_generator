@@ -73,7 +73,7 @@ class SceneSimulator:
 
         self.cruising_speed = 10.0
         self.crossing_speed = 5.0
-        self.lane_changing_probability = 0.001
+        self.lane_changing_probability = 0.01
         self.perception_range = perception_range
         self.ego_vehicle = None
         self.agents = []
@@ -388,7 +388,13 @@ class SceneSimulator:
             self.data_recorder.add_data(current_agent.id,'OnRouteClosestAgentDis',delta_s)
             self.data_recorder.add_data(current_agent.id,'OnRouteClosestAgentSpd',agent_v)
             self.data_recorder.add_data(current_agent.id,'OnRouteFollowAcc',acc_follow)
-
+        # 已碰撞,原地不动
+        if current_agent.around_agents.collition_agents:
+            acc_cmd = min(acc_cmd,current_agent.a_min)
+            logging.warning(
+                f"已发生碰撞,当前车id:{current_agent.id},碰撞车id:"+
+                ",".join(ag[0].id for ag in current_agent.around_agents.collition_agents)
+                )
         # 开阔空间智能体避碰,保底
         if current_agent.around_agents.front_agents:
             # open_space_msg = ""
@@ -431,14 +437,54 @@ class SceneSimulator:
             for check_agent,dis,lat,lon in around_agents:
                 if check_agent.id == current_agent.id:
                     continue
-                if envelope_collision_check(current_agent,check_agent,pred_horizon=3,margin_l=1.0,margin_w=0.0):
+                if envelope_collision_check(current_agent,check_agent,agent1_speed=max(0.3,current_agent.speed),agent2_speed=max(0.3,check_agent.speed),pred_horizon=3,margin_l=1.0,margin_w=0.0):
                     if dis>20 and check_agent.way_right_level>current_agent.way_right_level:
                         acc_in_junc = min(acc_in_junc,current_agent.a_min)
                         self.data_recorder.add_data(current_agent.id,'JunctionAgent',check_agent.id)
                     else:
-                        if envelope_collision_check(current_agent,check_agent,agent2_speed=0.0,pred_horizon=3,margin_l=1.0,margin_w=0.0):
-                            # 如果对方避让会撞,则自己必须让行;对方避让不会撞,则自己可以加速
+                        check_agent_give_way = envelope_collision_check(
+                            current_agent,
+                            check_agent,
+                            agent1_speed=max(0.3,current_agent.speed),
+                            agent2_speed=0.0,
+                            pred_horizon=3,
+                            margin_l=0.0,
+                            margin_w=0.0
+                            )
+                        current_agent_give_way = envelope_collision_check(
+                            current_agent,
+                            check_agent,
+                            agent1_speed=0.0,
+                            agent2_speed=max(0.3,check_agent.speed),
+                            pred_horizon=3,
+                            margin_l=0.0,
+                            margin_w=0.0
+                            )
+                        if not current_agent_give_way and not check_agent_give_way:
+                            # 如果双方都可以让行,则看谁路权低,路权低让行
+                            if current_agent.way_right_level<check_agent.way_right_level:
+                                acc_in_junc = min(acc_in_junc,current_agent.a_min)
+                            elif current_agent.way_right_level==check_agent.way_right_level:
+                                if current_agent.speed<check_agent.speed:
+                                    acc_in_junc = min(acc_in_junc,current_agent.a_min)
+                                elif current_agent.speed==check_agent.speed:
+                                    # 路权速度都相同,则id大的让行(这回不可能一样了)
+                                    if current_agent.id>check_agent.id:
+                                        acc_in_junc = min(acc_in_junc,current_agent.a_min)
+                            else:
+                                #路权高,不用管
+                                pass
+                        elif not current_agent_give_way and check_agent_give_way:
+                            # 只能当前车让行
                             acc_in_junc = min(acc_in_junc,current_agent.a_min)
+                        elif current_agent_give_way and not check_agent_give_way:
+                            # 只能对方让行,不用管
+                            pass
+                        else:
+                            # 两者都过不去
+                            acc_in_junc = min(acc_in_junc,current_agent.a_min)
+                            logging.warning(f"路口内塞车,双方都无法让行,当前车id:{current_agent.id},对方车id:{check_agent.id}")
+            
             self.data_recorder.add_data(current_agent.id,'JunctionAcc',acc_in_junc)
             self.data_recorder.add_data(current_agent.id,'WayRightLevel',current_agent.way_right_level)
             logging.debug(f"\t路口acc:{acc_in_junc:.3f}")
@@ -507,13 +553,13 @@ class SceneSimulator:
         acc_cmd = min(max(acc_cmd,current_agent.a_min),current_agent.a_max)
         return acc_cmd
     
-    def agent_leternal_control(self,current_agent)->float:
+    def agent_leternal_control(self,current_agent:TrafficAgent)->float:
         #横向控制
         ref_line = [element for sub_list in current_agent.ref_line for element in sub_list]
         curvature_cmd = pure_pursuit(
                         pose=current_agent.pos,
                         path=ref_line,
-                        lookahead=5.0 if current_agent.lane_change == (-1,-1) else 10.0
+                        lookahead=5.0 
                     )
         if self.plot_on and current_agent.id == "0":
             self.view.add_temp_path(ref_line,color="c",line_width=8,alpha=0.2,z_value=0)
@@ -532,15 +578,62 @@ class SceneSimulator:
         #         path=ref_line,
         #         lookahead=5.0
         #     )
-        if current_agent.lane_change != (-1,-1):
+        # 存在变道计划
+        if current_agent.lane_change != (-1,-1) and current_agent.plan_ref_line:
+            shift_ref_line = [element for sub_list in current_agent.plan_ref_line for element in sub_list]
+            shift_curvature_cmd = pure_pursuit(
+                        pose=current_agent.pos,
+                        path=shift_ref_line,
+                        lookahead=10.0
+                    )
+            can_shift = True
+            around_agents = current_agent.around_agents.front_agents
+            if abs(shift_curvature_cmd)<0.01:
+                around_agents+=current_agent.around_agents.left_agents+current_agent.around_agents.right_agents
+            elif shift_curvature_cmd>=0.01:
+                around_agents+=current_agent.around_agents.left_agents
+            else:
+                around_agents+=current_agent.around_agents.right_agents
+            for check_agent,dis,lat,lon in around_agents:
+                if check_agent.id == current_agent.id:
+                    continue
+                if envelope_collision_check(current_agent,check_agent,agent1_cur=shift_curvature_cmd):
+                    can_shift = False
+                    break
+
+            
             target_lane = self.map_parser.lanes[current_agent.lane_change[1]]
-            self.data_recorder.add_data(current_agent.id,'ChangingLaneTo',target_lane.belone_road.road_id+"_"+target_lane.lane_id)
-            _,_,is_out,_,_ = target_lane.projection(current_agent.pos)
-            if not is_out:
+            s,b,is_out,_,_ = target_lane.projection(current_agent.pos)
+            if s < 20+current_agent.length_front:
+                # 变道空间不足,取消变道计划
+                current_agent.lane_change = (0,0)
+                current_agent.plan_road_map.clear()
+                current_agent.plan_ref_line.clear()
+                current_agent.plan_plan_haul.clear()
+                logging.info(f"Agent {current_agent.id} 变道空间不足,取消变道计划！")
+            
+            elif not is_out:
+                # 完成变道
+                logging.info(f"Agent {current_agent.id} 完成变道！")
+                current_agent.road_map = current_agent.plan_road_map
+                current_agent.ref_line = current_agent.plan_ref_line
+                current_agent.plan_haul = current_agent.plan_plan_haul
+                current_agent.plan_road_map.clear()
+                current_agent.plan_ref_line.clear()
+                current_agent.plan_plan_haul.clear()
                 current_agent.current_lane_index = target_lane.lane_id
                 current_agent.current_road_index = target_lane.belone_road.road_id
                 current_agent.current_lane_unicode = target_lane.unicode
                 current_agent.lane_change = (-1,-1)
+                curvature_cmd = shift_curvature_cmd
+            else:
+                # 变道中
+                if can_shift:
+                    logging.info(f"Agent {current_agent.id} 变道中")
+                    curvature_cmd = shift_curvature_cmd
+                    self.data_recorder.add_data(current_agent.id,'ChangingLaneTo',target_lane.belone_road.road_id+"_"+target_lane.lane_id)
+                    self.data_recorder.add_data(current_agent.id,'ChangingLane',target_lane.belone_road.road_id+"_"+target_lane.lane_id)
+
         return curvature_cmd
 
     def load_replay(self, fps: float = None) -> bool:

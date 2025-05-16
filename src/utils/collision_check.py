@@ -82,21 +82,24 @@ def will_collision(agent1: TrafficAgent,
         t+=0.5
     return False
 
-def envelope_collision_check(agent1: TrafficAgent,
-                             agent2: TrafficAgent,
-                             agent1_speed: float = None,
-                             agent2_speed: float = None,
-                             pred_horizon: float = 2.0,
-                             margin_l: float = 0.0,
-                             margin_w: float = 0.0) -> bool:
-    agent1_envelope = [agent1.pred(dt=t,set_speed=agent1_speed) for t in np.arange(0,pred_horizon,0.5)]
-    agent2_envelope = [agent2.pred(dt=t,set_speed=agent2_speed) for t in np.arange(0,pred_horizon,0.5)]
+def envelope_collision_check(
+        agent1: TrafficAgent,
+        agent2: TrafficAgent,
+        agent1_speed: float = None,
+        agent2_speed: float = None,
+        agent1_cur: float = None,
+        agent2_cur: float = None,
+        pred_horizon: float = 2.0,
+        margin_l: float = 0.0,
+        margin_w: float = 0.0
+    ) -> bool:
+    agent1_envelope = [agent1.pred(dt=t,set_speed=agent1_speed, set_curvature=agent1_cur) for t in np.arange(0,pred_horizon,0.5)]
+    agent2_envelope = [agent2.pred(dt=t,set_speed=agent2_speed, set_curvature=agent2_cur) for t in np.arange(0,pred_horizon,0.5)]
     for agent1 in agent1_envelope:
         for agent2 in agent2_envelope:
             if is_collision(agent1=agent1,agent2=agent2,margin_l=margin_l,margin_w=margin_w):
                 return True
     return False
-    
 
 def distance_between(agent1: 'TrafficAgent',
                  agent2: 'TrafficAgent')->float:
