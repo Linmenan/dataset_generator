@@ -27,7 +27,7 @@ def agent_random_route(lane_changing_probability, current_agent:TrafficAgent,lan
                 current_agent.plan_haul.append(hold_lane.length)
                 pd_l+=hold_lane.length
         
-        if random.random() < lane_changing_probability and current_agent.lane_change == (-1,-1):
+        if random.random() < lane_changing_probability and current_agent.lane_change == (-1,-1) and abs(current_agent.cte)<0.05:
             current_lane = lanes[current_agent.current_lane_unicode]
             if current_agent.remain_s>max(30,2*current_agent.speed) and current_lane.belone_road.junction == "-1":
                 candidate_change_lanes = []

@@ -80,6 +80,7 @@ class TrafficAgent:
         self.cte = float('inf')
         self.out_lane = False
         self.ephi = float('inf')
+        self.shifting = False
         self.way_right_level = way_right_level
         self.right_of_way_map = {
             "Left": 1,

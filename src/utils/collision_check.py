@@ -74,13 +74,13 @@ def will_collision(agent1: TrafficAgent,
                  agent2_speed: float = None,
                  pred_horizon: float = 2.0,
                  margin_l: float = 0.0,
-                 margin_w: float = 0.0,) -> bool:
+                 margin_w: float = 0.0,) -> Tuple[bool,float]:
     t = 0.0
     while t<=pred_horizon:
         if is_collision(agent1=agent1.pred(dt=t,set_speed=agent1_speed),agent2=agent2.pred(dt=t,set_speed=agent2_speed),margin_l=margin_l,margin_w=margin_w):
-            return True
+            return True,t
         t+=0.5
-    return False
+    return False,float('inf')
 
 def envelope_collision_check(
         agent1: TrafficAgent,
@@ -92,14 +92,20 @@ def envelope_collision_check(
         pred_horizon: float = 2.0,
         margin_l: float = 0.0,
         margin_w: float = 0.0
-    ) -> bool:
-    agent1_envelope = [agent1.pred(dt=t,set_speed=agent1_speed, set_curvature=agent1_cur) for t in np.arange(0,pred_horizon,0.5)]
-    agent2_envelope = [agent2.pred(dt=t,set_speed=agent2_speed, set_curvature=agent2_cur) for t in np.arange(0,pred_horizon,0.5)]
-    for agent1 in agent1_envelope:
-        for agent2 in agent2_envelope:
-            if is_collision(agent1=agent1,agent2=agent2,margin_l=margin_l,margin_w=margin_w):
-                return True
-    return False
+    ) -> Tuple[bool,float]:
+     # 生成预测轨迹包络，同时记录每个预测点对应的时间
+    time_steps = np.arange(0, pred_horizon, 0.5)
+    agent1_envelope = [(agent1.pred(dt=t, set_speed=agent1_speed, set_curvature=agent1_cur), t) for t in time_steps]
+    agent2_envelope = [(agent2.pred(dt=t, set_speed=agent2_speed, set_curvature=agent2_cur), t) for t in time_steps]
+    
+    # 检查所有可能的预测点组合
+    for agent1_state, t1 in agent1_envelope:
+        for agent2_state, t2 in agent2_envelope:
+            col = is_collision(agent1=agent1_state, agent2=agent2_state, margin_l=margin_l, margin_w=margin_w)
+            if col:
+                return True,min(t1,t2)
+
+    return False,float('inf')
 
 def distance_between(agent1: 'TrafficAgent',
                  agent2: 'TrafficAgent')->float:

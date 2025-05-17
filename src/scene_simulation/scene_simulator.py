@@ -1,7 +1,7 @@
 from ..models.agent import *
 from ..parsers.parsers import MapParser
 from ..models.map_elements import *
-from ..utils.collision_check import is_collision, will_collision, distance_between, envelope_collision_check
+from ..utils.collision_check import is_collision, envelope_collision_check
 
 import plotly.graph_objects as go
 import numpy as np
@@ -325,14 +325,20 @@ class SceneSimulator:
                     "LaneMap",
                     "->".join(f"R{ln.belone_road.road_id}L{ln.lane_id}" for ln in current_agent.road_map)
                 )
+                # self.data_recorder.add_data(
+                #     current_agent.id,
+                #     "PlanLaneMap",
+                #     "->".join(f"R{ln.belone_road.road_id}L{ln.lane_id}" for ln in current_agent.plan_road_map)
+                # )
 
                 # 控制
                 acc_cmd = self.agent_longitudinal_control(current_agent=current_agent)
                 curvature_cmd = self.agent_leternal_control(current_agent=current_agent)
-
+                
                 logging.debug(f"\t v:{current_agent.speed:.3f}, acc_cmd:{acc_cmd:.3f}, cur_cmd:{curvature_cmd:.4f}")
                 self.data_recorder.add_data(current_agent.id,'AccCmd',acc_cmd)
                 self.data_recorder.add_data(current_agent.id,'CurCmd',curvature_cmd)
+                self.data_recorder.add_data(current_agent.id,'Shifting',current_agent.shifting)
 
                 # 更新智能体状态
                 current_agent.step(a_cmd = acc_cmd, cur_cmd = curvature_cmd, dt = self.step)
@@ -360,6 +366,7 @@ class SceneSimulator:
                             current_agent.plan_ref_line.clear()
                             current_agent.plan_plan_haul.clear()
                             current_agent.lane_change = (-1,-1)
+                            current_agent.shifting = False
                             logging.warning(f"Agent {current_agent.id} 变道失败，放弃变道！")
 
     
@@ -397,15 +404,10 @@ class SceneSimulator:
                 )
         # 开阔空间智能体避碰,保底
         if current_agent.around_agents.front_agents:
-            # open_space_msg = ""
-            # for agent,dis,lat,lon in current_agent.around_agents.front_agents:
-            #     open_space_msg += f"{agent.id}({dis:.1f},{lat:.1f},{lon:.1f}),"
-            # self.data_recorder.add_data(current_agent.id,'OpenSpaceMessage',open_space_msg)
-
             current_agent.around_agents.front_agents.sort(key=lambda x: x[3])
             open_agent = None
             for agent,dis,_,lon in current_agent.around_agents.front_agents:
-                if will_collision(current_agent,agent,pred_horizon=3,margin_l=1.0,margin_w=0.0):
+                if envelope_collision_check(current_agent,agent,pred_horizon=3,margin_l=1.0,margin_w=0.0)[0]:
                     open_agent = agent
                     break
             if open_agent is not None:
@@ -421,7 +423,6 @@ class SceneSimulator:
         # 路口中路权礼让
         if road.junction != "-1":
             color,_,_ = get_lane_traffic_light(current_lane,self.map_parser.traffic_lights.values(),sim_time=self.sim_time)
-
             if color=='grey':
                 acc_in_junc = compute_acceleration(self.cruising_speed, current_v)
             else:
@@ -437,7 +438,7 @@ class SceneSimulator:
             for check_agent,dis,lat,lon in around_agents:
                 if check_agent.id == current_agent.id:
                     continue
-                if envelope_collision_check(current_agent,check_agent,agent1_speed=max(0.3,current_agent.speed),agent2_speed=max(0.3,check_agent.speed),pred_horizon=3,margin_l=1.0,margin_w=0.0):
+                if envelope_collision_check(current_agent,check_agent,agent1_speed=max(0.3,current_agent.speed),agent2_speed=max(0.3,check_agent.speed),pred_horizon=3,margin_l=1.0,margin_w=0.0)[0]:
                     if dis>20 and check_agent.way_right_level>current_agent.way_right_level:
                         acc_in_junc = min(acc_in_junc,current_agent.a_min)
                         self.data_recorder.add_data(current_agent.id,'JunctionAgent',check_agent.id)
@@ -450,7 +451,7 @@ class SceneSimulator:
                             pred_horizon=3,
                             margin_l=0.0,
                             margin_w=0.0
-                            )
+                            )[0]
                         current_agent_give_way = envelope_collision_check(
                             current_agent,
                             check_agent,
@@ -459,7 +460,7 @@ class SceneSimulator:
                             pred_horizon=3,
                             margin_l=0.0,
                             margin_w=0.0
-                            )
+                            )[0]
                         if not current_agent_give_way and not check_agent_give_way:
                             # 如果双方都可以让行,则看谁路权低,路权低让行
                             if current_agent.way_right_level<check_agent.way_right_level:
@@ -510,20 +511,23 @@ class SceneSimulator:
                         logging.debug(f"\t前方{signal_remain_s:.3f}m路口{RED}{color}{RESET}灯")
                     
                     stop_s = abs(current_agent.speed**2/(2*current_agent.a_min))
+                    # 信号灯超出制动距离，不用管
                     if signal_remain_s>max(stop_s, 30.0):
                         acc_safe = compute_acceleration(self.cruising_speed, current_v)
-                        self.data_recorder.add_data(current_agent.id,'SignalSafeacc',acc_safe)
+                        self.data_recorder.add_data(current_agent.id,'SignalSafeAcc',acc_safe)
                         logging.debug(f"\t灯前安全acc{acc_safe:.3f}")
                         acc_cmd = min(acc_cmd, acc_safe)
 
                     else:
                         if color == 'green':
                             if countdown>3.0:
+                                # 绿灯没闪，路口减速观察通过
                                 acc_green = compute_acceleration(self.crossing_speed, current_v)
-                                self.data_recorder.add_data(current_agent.id,'JunctionAcc',acc_green)
+                                self.data_recorder.add_data(current_agent.id,'CrossingObservationAcc',acc_green)
                                 logging.debug(f"\t灯前通行acc{acc_green:.3f}")
                                 acc_cmd = min(acc_cmd, acc_green)
                             else:
+                                # 绿灯闪烁，不抢灯，停车
                                 acc_wait = compute_stop_acceleration(
                                     target_speed=0.0, cruising_speed=self.cruising_speed, current_speed=current_v, remain_distance=signal_remain_s
                                     )
@@ -531,6 +535,7 @@ class SceneSimulator:
                                 logging.debug(f"\t灯前等待acc{acc_wait:.3f}")
                                 acc_cmd = min(acc_cmd, acc_wait)
                         else:
+                            # 红黄灯，停车等待
                             acc_red =  compute_stop_acceleration(
                                 target_speed=0.0, cruising_speed=self.cruising_speed, current_speed=current_v, remain_distance=signal_remain_s
                                 )
@@ -540,7 +545,7 @@ class SceneSimulator:
                 pred_length+=check_lane.length
 
                 if pred_length>30:
-                    # 前方30m内无信号灯,则可以加速
+                    # 前方30m内无信号灯,则可以加速(逻辑存在风险，主要是为了程序加速)
                     acc_in_road1 = compute_acceleration(self.cruising_speed, current_v)
                     self.data_recorder.add_data(current_agent.id,'RoadAcc',acc_in_road1)
                     logging.debug(f"\t道路acc:{acc_in_road1:.3f}")
@@ -563,21 +568,7 @@ class SceneSimulator:
                     )
         if self.plot_on and current_agent.id == "0":
             self.view.add_temp_path(ref_line,color="c",line_width=8,alpha=0.2,z_value=0)
-        # if current_agent.id == "0":
-        #     start = time.perf_counter()
-        #     curvature_cmd, pred_traj, sub_ref = self.mpc.solve(current_agent,ref_line)
-        #     end = time.perf_counter()
-        #     print(f"MPC time:{end-start}")
-        #     if self.plot_on:
-        #         self.view.add_temp_path(ref_line,color="c",line_width=8,alpha=0.2,z_value=0)
-        #         self.view.add_temp_path(sub_ref,color="m",z_value=1)
-        #         self.view.add_temp_path(pred_traj,color="b",z_value=2)
-        # else:
-        #     curvature_cmd = self.pure_pursuit_curvature(
-        #         pose=current_agent.pos,
-        #         path=ref_line,
-        #         lookahead=5.0
-        #     )
+
         # 存在变道计划
         if current_agent.lane_change != (-1,-1) and current_agent.plan_ref_line:
             shift_ref_line = [element for sub_list in current_agent.plan_ref_line for element in sub_list]
@@ -597,11 +588,11 @@ class SceneSimulator:
             for check_agent,dis,lat,lon in around_agents:
                 if check_agent.id == current_agent.id:
                     continue
-                if envelope_collision_check(current_agent,check_agent,agent1_cur=shift_curvature_cmd):
+                col,ttc = envelope_collision_check(current_agent,check_agent,agent1_cur=shift_curvature_cmd)
+                if col:
                     can_shift = False
                     break
 
-            
             target_lane = self.map_parser.lanes[current_agent.lane_change[1]]
             s,b,is_out,_,_ = target_lane.projection(current_agent.pos)
             if s < 20+current_agent.length_front:
@@ -610,14 +601,15 @@ class SceneSimulator:
                 current_agent.plan_road_map.clear()
                 current_agent.plan_ref_line.clear()
                 current_agent.plan_plan_haul.clear()
+                current_agent.shifting = False
                 logging.info(f"Agent {current_agent.id} 变道空间不足,取消变道计划！")
             
             elif not is_out:
                 # 完成变道
                 logging.info(f"Agent {current_agent.id} 完成变道！")
-                current_agent.road_map = current_agent.plan_road_map
-                current_agent.ref_line = current_agent.plan_ref_line
-                current_agent.plan_haul = current_agent.plan_plan_haul
+                current_agent.road_map = current_agent.plan_road_map.copy()  # 浅拷贝
+                current_agent.ref_line = current_agent.plan_ref_line.copy()  # 浅拷贝
+                current_agent.plan_haul = current_agent.plan_plan_haul.copy()  # 浅拷贝
                 current_agent.plan_road_map.clear()
                 current_agent.plan_ref_line.clear()
                 current_agent.plan_plan_haul.clear()
@@ -626,13 +618,14 @@ class SceneSimulator:
                 current_agent.current_lane_unicode = target_lane.unicode
                 current_agent.lane_change = (-1,-1)
                 curvature_cmd = shift_curvature_cmd
+                current_agent.shifting = False
             else:
                 # 变道中
-                if can_shift:
+                if can_shift or current_agent.shifting:
                     logging.info(f"Agent {current_agent.id} 变道中")
                     curvature_cmd = shift_curvature_cmd
-                    self.data_recorder.add_data(current_agent.id,'ChangingLaneTo',target_lane.belone_road.road_id+"_"+target_lane.lane_id)
-                    self.data_recorder.add_data(current_agent.id,'ChangingLane',target_lane.belone_road.road_id+"_"+target_lane.lane_id)
+                    current_agent.shifting = True
+                    self.data_recorder.add_data(current_agent.id,'ChangingLane',current_agent.current_road_index+"_"+current_agent.current_lane_index+"->"+target_lane.belone_road.road_id+"_"+target_lane.lane_id)
 
         return curvature_cmd
 
