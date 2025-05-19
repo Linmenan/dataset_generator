@@ -606,7 +606,8 @@ class SceneSimulator:
 
             target_lane = self.map_parser.lanes[current_agent.lane_change[1]]
             s,b,is_out,_,_ = target_lane.projection(current_agent.pos)
-            if s < 20+current_agent.length_front:
+            remain_s = target_lane.length - s
+            if remain_s < 20+current_agent.length_front:
                 # 变道空间不足,取消变道计划
                 current_agent.lane_change = (0,0)
                 current_agent.plan_road_map.clear()
