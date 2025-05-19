@@ -193,7 +193,7 @@ class TrafficAgent:
                 overlap_y = (a_min_y <= e_left ) and (a_max_y >= e_right)
                 overlap_x1 = (a_min_x1 <= e_front1) and (a_max_x1 >= e_rear1)
                 overlap_y1 = (a_min_y1 <= e_left1 ) and (a_max_y1 >= e_right1)
-                if overlap_x and overlap_y and overlap_x1 and overlap_y:
+                if overlap_x and overlap_y and overlap_x1 and overlap_y1:
                     self.around_agents.collition_agents.append((agent,dis,0.0,0.0))
                 # ------------------ 3. 分类 ------------------
                 # 优先级：front > left > right > rear
