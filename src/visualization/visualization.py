@@ -204,8 +204,8 @@ class SimView(QtWidgets.QMainWindow):
         self.btn_play.setText("❚❚" if timer_active else "▶")
 
         # ---------- 信号连接 ----------
-        self.btn_first.clicked.connect(lambda: self._seek_frame(0))
-        self.btn_last .clicked.connect(lambda: self._seek_frame(self.sim._replay_frames - 1))
+        self.btn_first.clicked.connect(lambda: self._seek_frame_and_pause(0))
+        self.btn_last .clicked.connect(lambda: self._seek_frame_and_pause(self.sim._replay_frames - 1))
         self.btn_prev .clicked.connect(lambda: self._seek_delta(-1))
         self.btn_next .clicked.connect(lambda: self._seek_delta(1))
         self.btn_play .clicked.connect(self._toggle_play)
@@ -513,7 +513,7 @@ class SimView(QtWidgets.QMainWindow):
         # 进度条已经在 _replay_step_once 中停在最后一帧，无需额外处理
         
     def _seek_delta(self, step: int):
-        self._seek_frame(self.sim._replay_index + step)
+        self._seek_frame_and_pause(self.sim._replay_index + step)
 
     def _seek_abs(self, idx: int):
         """
@@ -529,6 +529,19 @@ class SimView(QtWidgets.QMainWindow):
         self.sld_prog.setValue(idx)
         self.sld_prog.blockSignals(False)
 
+    # ---------- 公用：暂停播放 ----------
+    def _pause_playback(self):
+        if getattr(self, "_playing", False):
+            self._playing = False
+            if hasattr(self.sim, "_timer"):
+                self.sim._timer.stop()
+            if hasattr(self, "btn_play"):
+                self.btn_play.setText("▶")
+
+    def _seek_frame_and_pause(self, idx: int):
+        self._pause_playback()     # ① 先暂停
+        self._seek_frame(idx)      # ② 再跳帧
+    
     def _seek_frame(self, idx: int):
         idx = max(0, min(idx, self.sim._replay_frames - 1))
         self.sim._replay_index = idx
