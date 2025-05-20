@@ -406,13 +406,16 @@ class SceneSimulator:
         if current_agent.around_agents.front_agents:
             current_agent.around_agents.front_agents.sort(key=lambda x: x[3])
             open_agent = None
+            min_ttc = float('inf')
             for agent,dis,_,lon in current_agent.around_agents.front_agents:
-                if envelope_collision_check(current_agent,agent,pred_horizon=3,margin_l=1.0,margin_w=0.0)[0]:
+                col,ttc = envelope_collision_check(current_agent,agent,pred_horizon=3,margin_l=1.0,margin_w=0.0)
+                if col:
                     open_agent = agent
+                    min_ttc = min(min_ttc,ttc)
                     break
             if open_agent is not None:
                 agent_v = open_agent.speed
-                acc_follow = acc_idm(delta_s=lon, v1=current_v, v2=agent_v, v0=self.crossing_speed if road.junction != "-1" else self.cruising_speed)
+                acc_follow = acc_idm(delta_s=0.5*min_ttc*current_v, v1=current_v, v2=agent_v, v0=self.crossing_speed if road.junction != "-1" else self.cruising_speed)
                 logging.debug(f"\t开阔空间跟车acc:{acc_follow:.3f}")
                 acc_cmd = min(acc_cmd, acc_follow)
                 self.data_recorder.add_data(current_agent.id,'OpenSpaceClosestAgentId',open_agent.id)
@@ -440,6 +443,7 @@ class SceneSimulator:
                     continue
                 if envelope_collision_check(current_agent,check_agent,agent1_speed=max(0.3,current_agent.speed),agent2_speed=max(0.3,check_agent.speed),pred_horizon=3,margin_l=1.0,margin_w=0.0)[0]:
                     if dis>20 and check_agent.way_right_level>current_agent.way_right_level:
+                        self.data_recorder.add_data(current_agent.id,'JunctionEnv',"faraway_right_lower_stop_"+check_agent.id)
                         acc_in_junc = min(acc_in_junc,current_agent.a_min)
                         self.data_recorder.add_data(current_agent.id,'JunctionAgent',check_agent.id)
                     else:
@@ -464,26 +468,33 @@ class SceneSimulator:
                         if not current_agent_give_way and not check_agent_give_way:
                             # 如果双方都可以让行,则看谁路权低,路权低让行
                             if current_agent.way_right_level<check_agent.way_right_level:
+                                self.data_recorder.add_data(current_agent.id,'JunctionEnv',"way_right_lower_stop_"+check_agent.id)
                                 acc_in_junc = min(acc_in_junc,current_agent.a_min)
                             elif current_agent.way_right_level==check_agent.way_right_level:
                                 if current_agent.speed<check_agent.speed:
+                                    self.data_recorder.add_data(current_agent.id,'JunctionEnv',"slower_than_stop_"+check_agent.id)
                                     acc_in_junc = min(acc_in_junc,current_agent.a_min)
                                 elif current_agent.speed==check_agent.speed:
                                     # 路权速度都相同,则id大的让行(这回不可能一样了)
                                     if current_agent.id>check_agent.id:
+                                        self.data_recorder.add_data(current_agent.id,'JunctionEnv',"id_large_than_stop_"+check_agent.id)
                                         acc_in_junc = min(acc_in_junc,current_agent.a_min)
                             else:
                                 #路权高,不用管
+                                self.data_recorder.add_data(current_agent.id,'JunctionEnv',"way_right_higher_than_"+check_agent.id)
                                 pass
                         elif not current_agent_give_way and check_agent_give_way:
                             # 只能当前车让行
+                            self.data_recorder.add_data(current_agent.id,'JunctionEnv',"ego_stop_"+check_agent.id)
                             acc_in_junc = min(acc_in_junc,current_agent.a_min)
                         elif current_agent_give_way and not check_agent_give_way:
                             # 只能对方让行,不用管
+                            self.data_recorder.add_data(current_agent.id,'JunctionEnv',"other_stop_"+check_agent.id)
                             pass
                         else:
                             # 两者都过不去
                             acc_in_junc = min(acc_in_junc,current_agent.a_min)
+                            self.data_recorder.add_data(current_agent.id,'JunctionEnv',"traffic_jam_"+check_agent.id)
                             logging.warning(f"路口内塞车,双方都无法让行,当前车id:{current_agent.id},对方车id:{check_agent.id}")
             
             self.data_recorder.add_data(current_agent.id,'JunctionAcc',acc_in_junc)
@@ -596,6 +607,11 @@ class SceneSimulator:
             target_lane = self.map_parser.lanes[current_agent.lane_change[1]]
             s,b,is_out,_,_ = target_lane.projection(current_agent.pos)
             remain_s = target_lane.length - s
+            #到路口剩余距离
+            for lane in current_agent.plan_road_map[1:]:
+                if lane.belone_road.junction!="-1":# and get_lane_traffic_light(lane=lane,controlls=self.map_parser.traffic_lights,sim_time=self.sim_time)[0]!="grey":
+                    break
+                remain_s+=lane.length
             if remain_s < 20+current_agent.length_front:
                 # 变道空间不足,取消变道计划
                 current_agent.lane_change = (0,0)
