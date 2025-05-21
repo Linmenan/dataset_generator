@@ -11,12 +11,21 @@ class NearbyDistricts:
         self.right_agents = []        # 记录自身右侧与右后方{智能体,距离,横向距离,纵向距离}
         self.rear_agents = []         # 记录自身正后方{智能体,距离,横向距离,纵向距离}
         self.collition_agents = []    # 记录自身碰撞{智能体,距离,横向距离,纵向距离}
-    def clear(self):
+    def clear(self)->None:
         self.front_agents = []     
         self.left_agents = []      
         self.right_agents = []    
         self.rear_agents = []      
         self.collition_agents = [] 
+    
+    def get_all_around(self)->List['TrafficAgent']:
+        agents = []
+        agents.extend([item[0] for item in self.collition_agents])
+        agents.extend([item[0] for item in self.front_agents])
+        agents.extend([item[0] for item in self.left_agents])
+        agents.extend([item[0] for item in self.right_agents])
+        agents.extend([item[0] for item in self.rear_agents])
+        return agents
 
 class TrafficAgent:
     """

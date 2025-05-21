@@ -11,8 +11,8 @@ class MapParser:
         self.yaml_path = yaml_path
         self.tree = ET.parse(file_path)
         self.roads = {}
-        self.lanes = {}
-        self.lanes_serch = {}
+        self.lanes:Dict[int,Lane] = {}
+        self.lanes_serch:Dict[str,Lane] = {}
         self.lane_code = int(0)
         self.traffic_lights = {} # traffic light id 与 Controlle对象构成的字典
         self.parse_oxdr_all()

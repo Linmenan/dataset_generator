@@ -173,7 +173,21 @@ class Lane:
         ref_pts = [Point2D(x, y) 
                    for (x, y), (_, _), (_, _) in self.sampled_points]
         return ref_pts
+    def get_boundarys(self)-> List[List[Point2D]]:
+        """
+        返回车道边界线（车道线）的 Point2D 双层列表：
+        - 沿着行驶方向[左边界,右边界]
+        """
+        # 如果没有采样点，返回空列表
+        if not self.sampled_points:
+            return []
 
+        # 1) 从 sampled_points 中提取中心点 (第一个元素)
+        left_pts = [Point2D(x, y) 
+                   for (_, _),(x, y),(_, _) in self.sampled_points]
+        right_pts = [Point2D(x, y) 
+                   for (_, _),(_, _),(x, y) in self.sampled_points]
+        return [left_pts,right_pts]
         
 
 # 定义 Road 类
