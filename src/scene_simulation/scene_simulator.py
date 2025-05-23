@@ -74,7 +74,7 @@ class SceneSimulator:
 
         self.cruising_speed = 10.0
         self.crossing_speed = 5.0
-        self.lane_changing_probability = 0.01
+        self.lane_changing_probability = 0.1
         self.perception_range = perception_range
         self.ego_vehicle = None
         self.agents = []
@@ -594,53 +594,86 @@ class SceneSimulator:
         # 存在变道计划
         if current_agent.lane_change != (-1,-1) and current_agent.plan_ref_line:
             shift_ref_line = [element for sub_list in current_agent.plan_ref_line for element in sub_list]
-            # if current_agent.id != "0":
-            shift_curvature_cmd = pure_pursuit(
-                        pose=current_agent.pos,
-                        path=shift_ref_line,
-                        lookahead=10.0
+            if current_agent.id != "0":
+                shift_curvature_cmd = pure_pursuit(
+                            pose=current_agent.pos,
+                            path=shift_ref_line,
+                            lookahead=10.0
+                        )
+            else:
+                from lib.planning_lib.frenet_lattice.frenet_lattice import FrenetLattice
+                from lib.geometry_lib.trajectory.trajectory import Trajectory2D
+                from lib.geometry_lib.trajectory_point.trajectory_point import TrajectoryPoint2D
+                from lib.geometry_lib.line.line import Line2D
+                from lib.geometry_lib.point.point import Point2D
+                from lib.geometry_lib.pose.pose import Pose2D
+                from lib.geometry_lib.box.box import Box2D
+                planner = FrenetLattice()
+                ref_pts = [Point2D(x=p.x,y=p.y) for p in shift_ref_line]
+                ref_traj = Trajectory2D.from_points(ref_pts)
+                left_bound = Line2D(data=[Point2D(x=p.x,y=p.y) for p in self.map_parser.lanes[current_agent.current_lane_unicode].get_boundarys()[0]])
+                right_bound = Line2D(data=[Point2D(x=p.x,y=p.y) for p in self.map_parser.lanes[current_agent.lane_change[1]].get_boundarys()[1]])
+                self.view.add_temp_path(left_bound.data,color="#3500ff",line_width=1,alpha=1,z_value=1)
+                self.view.add_temp_path(right_bound.data,color="#d3ff00",line_width=1,alpha=1,z_value=1)
+                self.view.add_temp_path(ref_pts,color="y",line_width=1,alpha=1,z_value=1)
+                status,traj = planner.plan(
+                    current_agent.pos,
+                    current_agent.curvature,
+                    current_agent.box.length_front,
+                    current_agent.box.length_rear,
+                    current_agent.box.width,
+                    left_bound,
+                    right_bound,
+                    ref_traj,
+                    [Box2D.from_vehicle_box(Pose2D(ag.pos.x,ag.pos.y,ag.pos.yaw),ag.width,ag.length_front,ag.length_rear) for ag in current_agent.around_agents.get_all_around()]
                     )
-            # else:
-            #     from lib.planning_lib.lattice.lattice import LatticePlanner
-            #     from lib.planning_lib.lattice.lattice import LatticePlannerConfig
-            #     from lib.planning_lib.lattice.lattice import LatticeState
-            #     from lib.geometry_lib.trajectory.trajectory import Trajectory2D
-            #     from lib.geometry_lib.trajectory_point.trajectory_point import TrajectoryPoint2D
-            #     from lib.geometry_lib.line.line import Line2D
-            #     from lib.geometry_lib.point.point import Point2D
-            #     from lib.geometry_lib.pose.pose import Pose2D
-            #     from lib.geometry_lib.box.box import Box2D
-            #     planner = LatticePlanner(
-            #         LatticePlannerConfig(
-            #             delta_s=0.5,plan_distance=6.75,
-            #             longitudinal_sampling_point_number=6,longitudinal_sampling_interval=1.5,
-            #             transverse_sampling_point_number=6,transverse_sampling_interval=0.3,
-            #             max_curvature=0.01,precision_weight=1.0,smooth_weight=100.0,
-            #             obstacle_weight=10.0,end_point_weight=30.0,
-            #             distance_to_front=current_agent.length_front,
-            #             distance_to_left=current_agent.width*0.5,
-            #             distance_to_right=current_agent.width*0.5,
-            #             distance_to_rear=current_agent.length_rear
-            #             )
-            #         )
-            #     ref_pts = [Point2D(x=p.x,y=p.y) for p in shift_ref_line]
-            #     ref_traj = Trajectory2D.from_points(ref_pts)
-            #     left_bound = Line2D(data=[Point2D(x=p.x,y=p.y) for p in self.map_parser.lanes[current_agent.current_lane_unicode].get_boundarys()[0]])
-            #     right_bound = Line2D(data=[Point2D(x=p.x,y=p.y) for p in self.map_parser.lanes[current_agent.lane_change[1]].get_boundarys()[1]])
-            #     planner.set_left_bound(left_bound)
-            #     planner.set_right_bound(right_bound)
-            #     self.view.add_temp_path(left_bound.data,color="#3500ff",line_width=1,alpha=1,z_value=1)
-            #     self.view.add_temp_path(right_bound.data,color="#d3ff00",line_width=1,alpha=1,z_value=1)
-            #     self.view.add_temp_path(ref_pts,color="y",line_width=1,alpha=1,z_value=1)
-            #     planner.set_obstacles([Box2D.from_vehicle_box(Pose2D(ag.pos.x,ag.pos.y,ag.pos.yaw),ag.width,ag.length_front,ag.length_rear) for ag in current_agent.around_agents.get_all_around()])
-            #     status,traj = planner.plan(LatticeState(current_agent.pos.x,current_agent.pos.y,current_agent.pos.yaw,current_agent.curvature,current_agent.speed),ref_traj)
-            #     shift_ref_line = [Point2D(x=p.x,y=p.y) for p in traj.data]
-            #     self.view.add_temp_path(shift_ref_line,color="m",line_width=1,alpha=1,z_value=1)
-            #     shift_curvature_cmd = pure_pursuit(
-            #                 pose=current_agent.pos,
-            #                 path=shift_ref_line,
-            #                 lookahead=10.0
-            #             )
+                shift_ref_line_plan = [Point2D(x=p.x,y=p.y) for p in traj.data]
+                self.view.add_temp_path(shift_ref_line_plan,color="m",line_width=1,alpha=1,z_value=1)
+                shift_curvature_cmd = pure_pursuit(
+                            pose=current_agent.pos,
+                            path=shift_ref_line,
+                            lookahead=10.0
+                        )
+                # from lib.planning_lib.lattice.lattice import LatticePlanner
+                # from lib.planning_lib.lattice.lattice import LatticePlannerConfig
+                # from lib.planning_lib.lattice.lattice import LatticeState
+                # from lib.geometry_lib.trajectory.trajectory import Trajectory2D
+                # from lib.geometry_lib.trajectory_point.trajectory_point import TrajectoryPoint2D
+                # from lib.geometry_lib.line.line import Line2D
+                # from lib.geometry_lib.point.point import Point2D
+                # from lib.geometry_lib.pose.pose import Pose2D
+                # from lib.geometry_lib.box.box import Box2D
+                # planner = LatticePlanner(
+                #     LatticePlannerConfig(
+                #         delta_s=0.5,plan_distance=6.75,
+                #         longitudinal_sampling_point_number=6,longitudinal_sampling_interval=1.5,
+                #         transverse_sampling_point_number=6,transverse_sampling_interval=0.3,
+                #         max_curvature=0.01,precision_weight=1.0,smooth_weight=100.0,
+                #         obstacle_weight=10.0,end_point_weight=30.0,
+                #         distance_to_front=current_agent.length_front,
+                #         distance_to_left=current_agent.width*0.5,
+                #         distance_to_right=current_agent.width*0.5,
+                #         distance_to_rear=current_agent.length_rear
+                #         )
+                #     )
+                # ref_pts = [Point2D(x=p.x,y=p.y) for p in shift_ref_line]
+                # ref_traj = Trajectory2D.from_points(ref_pts)
+                # left_bound = Line2D(data=[Point2D(x=p.x,y=p.y) for p in self.map_parser.lanes[current_agent.current_lane_unicode].get_boundarys()[0]])
+                # right_bound = Line2D(data=[Point2D(x=p.x,y=p.y) for p in self.map_parser.lanes[current_agent.lane_change[1]].get_boundarys()[1]])
+                # planner.set_left_bound(left_bound)
+                # planner.set_right_bound(right_bound)
+                # self.view.add_temp_path(left_bound.data,color="#3500ff",line_width=1,alpha=1,z_value=1)
+                # self.view.add_temp_path(right_bound.data,color="#d3ff00",line_width=1,alpha=1,z_value=1)
+                # self.view.add_temp_path(ref_pts,color="y",line_width=1,alpha=1,z_value=1)
+                # planner.set_obstacles([Box2D.from_vehicle_box(Pose2D(ag.pos.x,ag.pos.y,ag.pos.yaw),ag.width,ag.length_front,ag.length_rear) for ag in current_agent.around_agents.get_all_around()])
+                # status,traj = planner.plan(LatticeState(current_agent.pos.x,current_agent.pos.y,current_agent.pos.yaw,current_agent.curvature,current_agent.speed),ref_traj)
+                # shift_ref_line = [Point2D(x=p.x,y=p.y) for p in traj.data]
+                # self.view.add_temp_path(shift_ref_line,color="m",line_width=1,alpha=1,z_value=1)
+                # shift_curvature_cmd = pure_pursuit(
+                #             pose=current_agent.pos,
+                #             path=shift_ref_line,
+                #             lookahead=10.0
+                #         )
             can_shift = True
             around_agents = current_agent.around_agents.front_agents
             if abs(shift_curvature_cmd)<0.01:

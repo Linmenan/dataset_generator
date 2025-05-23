@@ -1,6 +1,7 @@
 from ..trajectory_point.trajectory_point import *
 from ..vector.vector import *
-
+from ..box.box import Box2D
+from ..line.line import Line2D
 
 from typing import List
 import copy
@@ -42,7 +43,7 @@ class Trajectory2D:
         return (f"time_stamp:= {self.time_stamp}, is_forward:= {self.is_forward}, has_end_point:= {self.has_end_point}\n"
                 f"data:= \n{self.data}")
 
-    def interpolation_by_s(self, s):
+    def interpolation_by_s(self, s)->TrajectoryPoint2D:
         if len(self.data) == 0:
             return TrajectoryPoint2D()
         elif len(self.data) == 1:
@@ -159,4 +160,57 @@ class Trajectory2D:
     def transform_self_from(self, base_pose: Pose2D) -> None:
         for trajectory_point in self.data:
             trajectory_point.transform_self_from(base_pose)
+
+    def envelope_collition_check(self, length_front:float, length_rear:float, width:float, around:List[Box2D]) -> bool:
+        for trajectory_point in self.data:
+            for ego_box in around:
+                if Box2D.from_vehicle_box(Pose2D(trajectory_point.x, trajectory_point.y, trajectory_point.yaw), length_front, length_rear, width*0.5,width*0.5).is_collision_to_box(ego_box):
+                    return True
+        return False
+
+    # === 点在多边形内判定（Ray-Casting） ===
+    @staticmethod
+    def _point_in_poly(pt: "Point2D", poly: List["Point2D"]) -> bool:
+        inside = False
+        n = len(poly)
+        j = n - 1
+        for i in range(n):
+            xi, yi = poly[i].x, poly[i].y
+            xj, yj = poly[j].x, poly[j].y
+            intersect = ((yi > pt.y) != (yj > pt.y)) and \
+                        (pt.x < (xj - xi) * (pt.y - yi) /
+                         (yj - yi + 1e-12) + xi)
+            if intersect:
+                inside = not inside
+            j = i
+        return inside
+
+    def envelope_in_range(self, length_front:float, length_rear:float, width:float, left_bound:Line2D, right_bound:Line2D) -> bool:
+        """
+        判断轨迹上所有位置的车辆矩形是否始终位于左右边界之间
+        :param length_front: 车前保险杠到质心距离 (m)
+        :param length_rear:  车后保险杠到质心距离
+        :param width:        车辆宽 (m)
+        :param left_bound:   左边界折线
+        :param right_bound:  右边界折线
+        :return:             True → 全部在界内；False → 任一点越界
+        """
+        if not self.data or not left_bound.data or not right_bound.data:
+            print(f"路径数据长度{len(self.data)}，左右边界数据长度{len(left_bound.data)}/{len(right_bound.data)}")
+            return False
+
+        # 1. 生成道路多边形（确保顺时针 / 逆时针均可）
+        road_poly: List[Point2D] = []
+        road_poly.extend(left_bound.data)
+        road_poly.extend(reversed(right_bound.data))
+
+        # 2. 遍历轨迹点，检查四个角是否落在多边形内
+        half_w = width * 0.5
+        for tp in self.data:
+            box = Box2D.from_vehicle_box(Pose2D(tp.x, tp.y, tp.yaw), length_front, length_rear, width*0.5, width*0.5)
+            for corner_point in box.corners:
+                if not self._point_in_poly(corner_point, road_poly):
+                    return False   # 任一角出界 ⇒ 整条轨迹不合法
+
+        return True  # 全部角点都在界内 ⇒ 轨迹合法
 
