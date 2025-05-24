@@ -23,7 +23,7 @@ class FrenetLattice:
                  delta_s: float = 1.0,
                  horizon_s: float = 30.0,
                  max_curvature: float = 0.1):
-        self.n_lat = max(1, lateral_sample_num_per_side)
+        self.n_lat = max(0, lateral_sample_num_per_side)
         self.lat_step = max(1e-3, lateral_sample_step)
         self.ds = delta_s
         self.horizon = horizon_s
@@ -40,18 +40,19 @@ class FrenetLattice:
              right_bound:  Line2D,
              ref_traj:     Trajectory2D,
              obstacles:    List[Box2D]) -> Tuple[int,Trajectory2D]:
-
+        status = 0
         # 1. 计算当前 Frenet 状态
         proj = ref_traj.projection(ego_pose)
         s0 = proj.s
         dx, dy = ego_pose.x - proj.x, ego_pose.y - proj.y
         d0 = math.cos(proj.yaw) * dy - math.sin(proj.yaw) * dx
         dd0 = (ego_kappa - proj.curvature) * (1 + proj.curvature * d0)
-        d_dot0 = 0.0
-
+        d_dot0 = -np.tan(normalize_angle(proj.yaw-ego_pose.yaw))
+        # print(f"s0={s0}")
         # 2. 剪裁参考线：仅保留 [s0, s0 + horizon]
         ref_clipped = self._clip_ref_traj(ref_traj, s0, s0 + self.horizon)
-
+        # print(f"ref_traj={ref_traj}")
+        # print(f"ref_clipped={ref_clipped}")
         # 3. 生成横向偏移集合 [-N*step, …, 0, …, +N*step]
         lat_offsets = [
             i * self.lat_step
@@ -64,11 +65,12 @@ class FrenetLattice:
             coeffs = quintic_coeffs(
                 d0, d_dot0, dd0, d_f, 0.0, 0.0, self.horizon
             )
-
+            # print(f"coeffs={coeffs}")
+            
             points: List[TrajectoryPoint2D] = []
             feas = True
             abs_d_sum = 0.0
-
+            
             for i in range(int(self.horizon / self.ds) + 1):
                 si = s0 + i * self.ds
                 di = d_eval(coeffs, si - s0, 0)
@@ -85,6 +87,7 @@ class FrenetLattice:
                 )
                 if abs(kappa) > self.kappa_max:
                     feas = False
+                    print("当前采样路径曲率超出限制，跳过")
                     break
 
                 points.append(
@@ -93,35 +96,34 @@ class FrenetLattice:
                     )
                 )
                 abs_d_sum += abs(di)
-
             if not feas:
                 continue
 
             cand = Trajectory2D(points, is_forward=True)
 
-            # 4. 约束：碰撞 & 邻域
-            if (
-                cand.envelope_collition_check(
+            # 4.1 约束：碰撞
+            if (cand.envelope_collition_check(
                     length_front, length_rear, width, around=obstacles
-                )
-                or cand.envelope_in_range(
-                    length_front,
-                    length_rear,
-                    width,
-                    left_bound,
-                    right_bound,
-                )
-            ):
+                )):
+                print("当前采样路径不满足碰撞约束")
                 continue
+            # 4.2 约束：可行区域
+            cost_envelope_out_of_range = 0.0
+            # if (cand.envelope_in_range(
+            #         length_front, length_rear, width,
+            #         left_bound, right_bound,
+            #     )):
+            #     print("当前采样路径不满足可行驶区域")
+            #     cost_envelope_out_of_range = 10.0
 
             # 5. 代价：|d_f| + 曲率 + 横向误差均值
             mean_abs_d = abs_d_sum / len(points)
-            cost = abs(d_f) * 1.0 + self._integral_curv(points) * 0.5 + mean_abs_d
-
+            cost = abs(d_f) * 1.0 + self._integral_curv(points) * 0.5 + mean_abs_d + cost_envelope_out_of_range
             if cost < best_cost:
+                status = 1
                 best_cost, best_traj = cost, cand
 
-        return (1,best_traj)  # 可能为 None
+        return (status,best_traj)  # 可能为 None
 
     # ---------- 内部工具 ----------
     @staticmethod
@@ -148,5 +150,7 @@ class FrenetLattice:
         nx, ny = -math.sin(tp.yaw), math.cos(tp.yaw)
         x, y = tp.x + d * nx, tp.y + d * ny
         denom = max(1e-6, 1.0 - tp.curvature * d)
-        yaw = tp.yaw + math.atan2(d_prime, denom)
-        return x, y, normalize_angle(yaw)
+        yaw = normalize_angle(tp.yaw + math.atan2(d_prime, denom))
+        # print(f"si={s:.3f}, di={d:.3f}, xi={x:.3f}, yi={y:.3f}, yawi={yaw:.3f}, tpxi={tp.x:.3f}, tpyi={tp.y:.3f}, tpyawi={tp.yaw:.3f}")
+
+        return x, y, yaw

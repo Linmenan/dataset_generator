@@ -337,8 +337,8 @@ class SceneSimulator:
 
                 # 控制
                 acc_cmd = self.agent_longitudinal_control(current_agent=current_agent)
-                curvature_cmd = self.agent_leternal_control(current_agent=current_agent)
                 
+                curvature_cmd = self.agent_leternal_control(current_agent=current_agent)
                 logging.debug(f"\t v:{current_agent.speed:.3f}, acc_cmd:{acc_cmd:.3f}, cur_cmd:{curvature_cmd:.4f}")
                 self.data_recorder.add_data(current_agent.id,'AccCmd',acc_cmd)
                 self.data_recorder.add_data(current_agent.id,'CurCmd',curvature_cmd)
@@ -593,6 +593,8 @@ class SceneSimulator:
 
         # 存在变道计划
         if current_agent.lane_change != (-1,-1) and current_agent.plan_ref_line:
+            current_lane = self.map_parser.lanes[current_agent.current_lane_unicode]
+            target_lane = self.map_parser.lanes[current_agent.lane_change[1]]
             shift_ref_line = [element for sub_list in current_agent.plan_ref_line for element in sub_list]
             if current_agent.id != "0":
                 shift_curvature_cmd = pure_pursuit(
@@ -608,14 +610,26 @@ class SceneSimulator:
                 from lib.geometry_lib.point.point import Point2D
                 from lib.geometry_lib.pose.pose import Pose2D
                 from lib.geometry_lib.box.box import Box2D
-                planner = FrenetLattice()
-                ref_pts = [Point2D(x=p.x,y=p.y) for p in shift_ref_line]
+                planner = FrenetLattice(lateral_sample_num_per_side=0)
+                ref_pts = [Point2D(x=p.x,y=p.y) for p in shift_ref_line[::10]]
                 ref_traj = Trajectory2D.from_points(ref_pts)
-                left_bound = Line2D(data=[Point2D(x=p.x,y=p.y) for p in self.map_parser.lanes[current_agent.current_lane_unicode].get_boundarys()[0]])
-                right_bound = Line2D(data=[Point2D(x=p.x,y=p.y) for p in self.map_parser.lanes[current_agent.lane_change[1]].get_boundarys()[1]])
-                self.view.add_temp_path(left_bound.data,color="#3500ff",line_width=1,alpha=1,z_value=1)
-                self.view.add_temp_path(right_bound.data,color="#d3ff00",line_width=1,alpha=1,z_value=1)
-                self.view.add_temp_path(ref_pts,color="y",line_width=1,alpha=1,z_value=1)
+                if current_lane.travel_dir == "forward":
+                    if (int(current_lane.lane_id)>int(target_lane.lane_id)):
+                        left_bound = Line2D(data=[Point2D(x=p.x,y=p.y) for p in current_lane.get_boundarys()[0][::10]])
+                        right_bound = Line2D(data=[Point2D(x=p.x,y=p.y) for p in target_lane.get_boundarys()[1][::10]])
+                    else:
+                        left_bound = Line2D(data=[Point2D(x=p.x,y=p.y) for p in current_lane.get_boundarys()[1][::10]])
+                        right_bound = Line2D(data=[Point2D(x=p.x,y=p.y) for p in target_lane.get_boundarys()[0][::10]])
+                else:
+                    if (int(current_lane.lane_id)>int(target_lane.lane_id)):
+                        left_bound = Line2D(data=[Point2D(x=p.x,y=p.y) for p in current_lane.get_boundarys()[1][::10]])
+                        right_bound = Line2D(data=[Point2D(x=p.x,y=p.y) for p in target_lane.get_boundarys()[0][::10]])
+                    else:
+                        left_bound = Line2D(data=[Point2D(x=p.x,y=p.y) for p in current_lane.get_boundarys()[0][::10]])
+                        right_bound = Line2D(data=[Point2D(x=p.x,y=p.y) for p in target_lane.get_boundarys()[1][::10]])
+                # self.view.add_temp_path(left_bound.data,color="#3500ff",line_width=1,alpha=1,z_value=1)
+                # self.view.add_temp_path(right_bound.data,color="#3500ff",line_width=1,alpha=1,z_value=1)
+                # self.view.add_temp_path(ref_pts,color="y",line_width=1,alpha=1,z_value=1)
                 status,traj = planner.plan(
                     current_agent.pos,
                     current_agent.curvature,
@@ -628,11 +642,11 @@ class SceneSimulator:
                     [Box2D.from_vehicle_box(Pose2D(ag.pos.x,ag.pos.y,ag.pos.yaw),ag.width,ag.length_front,ag.length_rear) for ag in current_agent.around_agents.get_all_around()]
                     )
                 shift_ref_line_plan = [Point2D(x=p.x,y=p.y) for p in traj.data]
-                self.view.add_temp_path(shift_ref_line_plan,color="m",line_width=1,alpha=1,z_value=1)
+                # self.view.add_temp_path(shift_ref_line_plan,color="m",line_width=1,alpha=1,z_value=1)
                 shift_curvature_cmd = pure_pursuit(
                             pose=current_agent.pos,
-                            path=shift_ref_line,
-                            lookahead=10.0
+                            path=shift_ref_line_plan,
+                            lookahead=15.0
                         )
                 # from lib.planning_lib.lattice.lattice import LatticePlanner
                 # from lib.planning_lib.lattice.lattice import LatticePlannerConfig
@@ -690,7 +704,7 @@ class SceneSimulator:
                     can_shift = False
                     break
 
-            target_lane = self.map_parser.lanes[current_agent.lane_change[1]]
+            
             s,b,is_out,_,_ = target_lane.projection(current_agent.pos)
             remain_s = target_lane.length - s
             #到路口剩余距离

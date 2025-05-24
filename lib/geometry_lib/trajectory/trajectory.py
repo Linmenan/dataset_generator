@@ -19,10 +19,11 @@ class Trajectory2D:
     def from_points(cls, points: List[Point2D], time_stamp = 0.0,
                     is_forward: bool = True, has_end_point: bool = False):
         data = []
+        s = 0.0
         if (len(points) == 0):
             data = []
         else:
-            data.append(TrajectoryPoint2D(s = 0.0, 
+            data.append(TrajectoryPoint2D(s = s, 
                                           x = points[0].x, 
                                           y = points[0].y))
             if (len(points) > 1):
@@ -31,8 +32,10 @@ class Trajectory2D:
                 # print("origin yaw:= ")
                 # print(math.atan2(points[1].y -  points[0].y, 
                 #                  points[1].x - points[0].x))
+                
                 for i in range(1, len(points)):
-                    data.append(TrajectoryPoint2D(s = points[i].distance_to(points[i - 1]), 
+                    s+=points[i].distance_to(points[i - 1])
+                    data.append(TrajectoryPoint2D(s = s, 
                                                 x = points[i].x, 
                                                 y = points[i].y,
                                                 yaw = math.atan2(points[i].y -  points[i - 1].y, 
